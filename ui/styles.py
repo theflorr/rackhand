@@ -403,12 +403,115 @@ Label { color: #666666; }
 #p-custom-model-box Input { margin-bottom: 1; }
 #p-result { height: auto; min-height: 1; margin-top: 1; }
 
-/* workspace settings tab */
-#tab-settings { height: 100%; padding: 1 2; }
-#tab-settings-scroll { max-width: 84; height: 100%; }
-#tab-settings-scroll .title { margin-bottom: 1; }
-.settings-tab-lbl { color: #888888; text-style: bold; height: 1; margin-top: 1; margin-bottom: 0; }
-.settings-tab-btn-row { height: 1; margin-top: 1; margin-bottom: 1; }
+/* ── workspace settings tab & modal ─────────────────────────────────────────── */
+#tab-settings {
+    height: 100%;
+    padding: 1 3;
+    background: #0a0a0a;
+}
+
+#tab-settings-scroll {
+    max-width: 96;
+    height: 100%;
+    padding-bottom: 2;
+}
+
+#settings-hdr {
+    height: auto;
+    margin-bottom: 1;
+    padding-bottom: 1;
+    border-bottom: solid #222222;
+}
+
+#settings-title {
+    color: #ffffff;
+    text-style: bold;
+    height: 1;
+}
+
+#settings-subtitle {
+    color: #666666;
+    height: 1;
+}
+
+.settings-card {
+    height: auto;
+    background: #111111;
+    border: round #222222;
+    padding: 1 2;
+    margin-bottom: 1;
+}
+
+.settings-card:hover {
+    border: round #333333;
+}
+
+.settings-card-header {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.settings-card-title {
+    color: #eeeeee;
+    text-style: bold;
+    height: 1;
+}
+
+.settings-card-desc {
+    color: #666666;
+    height: auto;
+}
+
+.settings-field-group {
+    height: auto;
+    margin-top: 1;
+}
+
+.settings-field-lbl {
+    color: #cccccc;
+    text-style: bold;
+    height: 1;
+    margin-top: 1;
+}
+
+.settings-field-help {
+    color: #555555;
+    height: auto;
+    margin-bottom: 1;
+}
+
+.settings-row {
+    height: auto;
+    layout: horizontal;
+    margin-top: 1;
+}
+
+.settings-col {
+    width: 1fr;
+    height: auto;
+    margin-right: 2;
+}
+
+.settings-btn-row {
+    height: auto;
+    layout: horizontal;
+    margin-top: 1;
+    margin-bottom: 2;
+}
+
+.settings-btn-row Button {
+    margin-right: 1;
+}
+
+#settings.small {
+    width: 82;
+    max-width: 95%;
+    height: auto;
+    max-height: 88%;
+    background: #111111;
+    border: round #2e2e2e;
+    padding: 1 2;
+}
 
 /* ── approval modal redesign ────────────────────────────────────────────── */
 #approval {

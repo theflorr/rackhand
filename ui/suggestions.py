@@ -59,6 +59,7 @@ def get_suggestions(raw_text: str, app: Any = None) -> list[CommandSuggestion]:
         all_cmds = [
             CommandSuggestion("/agent", "/agent [name]", "Switch or inspect active specialist agent", completion="/agent "),
             CommandSuggestion("/agent list", "/agent list", "List all available specialist agents", completion="/agent list"),
+            CommandSuggestion("/settings", "/settings", "Open settings and guardrails configuration", completion="/settings"),
             CommandSuggestion("/clear", "/clear", "Clear current session chat history", completion="/clear"),
             CommandSuggestion("/help", "/help", "Show all available commands and shortcuts", completion="/help"),
         ]

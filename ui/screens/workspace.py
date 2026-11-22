@@ -447,6 +447,8 @@ class WorkspaceScreen(Screen):
                     pass
                 with Horizontal(classes="sidebar-btn-row"):
                     yield Button("+ new session", id="btn-new-session")
+                with Horizontal(classes="sidebar-btn-row"):
+                    yield Button("settings", id="btn-sidebar-settings")
             yield SidebarDivider()
             with TabbedContent(id="main", initial="tab-agent"):
                 with TabPane("agent", id="tab-agent"):
@@ -463,6 +465,9 @@ class WorkspaceScreen(Screen):
                                 btn_model = Button("model", id="btn-model")
                                 btn_model.can_focus = False
                                 yield btn_model
+                                btn_settings = Button("settings", id="btn-composer-settings")
+                                btn_settings.can_focus = False
+                                yield btn_settings
                 with TabPane("console", id="tab-console"):
                     with Horizontal(id="console-header"):
                         with Horizontal(id="console-hdr-left"):
@@ -482,29 +487,89 @@ class WorkspaceScreen(Screen):
                         yield ConsoleInput(placeholder="Send raw CLI command to device... (Enter to send, ↑/↓ history)", id="console-input")
                 with TabPane("settings", id="tab-settings"):
                     with VerticalScroll(id="tab-settings-scroll"):
-                        yield MenuStatic(Text("SETTINGS", style="bold white"), classes="title")
-                        yield Label("Approval policy", classes="settings-tab-lbl")
-                        yield Select([("Every command", "ask_all"),
-                                      ("Config changes only", "ask_changes"),
-                                      ("Dangerous actions only", "auto_safe")],
-                                     value="ask_changes", allow_blank=False, id="ws-s-approval")
-                        yield Checkbox("Redact passwords & secrets", True, id="ws-s-redact")
-                        yield Checkbox("Backup config before changes", True, id="ws-s-backup")
-                        yield Checkbox("Disable terminal paging", True, id="ws-s-paging")
-                        yield Checkbox("Save transcripts", True, id="ws-s-transcripts")
-                        yield Label("Transcript directory", classes="settings-tab-lbl")
-                        yield Input("", id="ws-s-dir")
-                        with Horizontal(classes="row"):
-                            with Vertical(classes="col"):
-                                yield Label("Max steps / turn")
-                                yield Input("25", id="ws-s-steps", type="integer")
-                            with Vertical(classes="col"):
-                                yield Label("Timeout (s)")
-                                yield Input("30", id="ws-s-timeout", type="integer")
-                        yield Label("Theme", classes="settings-tab-lbl")
-                        yield Select([(t, t) for t in THEMES], value="rackhand", allow_blank=False, id="ws-s-theme")
-                        with Horizontal(classes="settings-tab-btn-row"):
+                        with Vertical(id="settings-hdr"):
+                            hdr = Text()
+                            hdr.append("› ", style="bold #cccccc")
+                            hdr.append("SETTINGS & PREFERENCES", style="bold white")
+                            yield Static(hdr, id="settings-title")
+                            yield Static("Configure safety guardrails, execution limits, and workspace appearance.", id="settings-subtitle")
+
+                        # 1. Safety & Guardrails
+                        with Vertical(classes="settings-card"):
+                            with Vertical(classes="settings-card-header"):
+                                yield Static("SAFETY & GUARDRAILS", classes="settings-card-title")
+                                yield Static("Control human approval thresholds and secret sanitization.", classes="settings-card-desc")
+
+                            yield Label("Approval Policy", classes="settings-field-lbl")
+                            yield Select(
+                                [
+                                    ("Config changes only (Recommended)", "ask_changes"),
+                                    ("Every command", "ask_all"),
+                                    ("Dangerous actions only", "auto_safe"),
+                                ],
+                                value="ask_changes",
+                                allow_blank=False,
+                                id="ws-s-approval",
+                            )
+                            yield Static("Controls when the autonomous agent pauses for explicit confirmation.", classes="settings-field-help")
+
+                            yield Checkbox("Snapshot running-config before applying changes", True, id="ws-s-backup")
+                            yield Static("Archives active config to NVRAM rollback history prior to changes.", classes="settings-field-help")
+
+                            yield Checkbox("Mask passwords, hashes, and SNMP community strings", True, id="ws-s-redact")
+                            yield Static("Sanitizes sensitive credentials before console output reaches the LLM.", classes="settings-field-help")
+
+                        # 2. Terminal & Execution Limits
+                        with Vertical(classes="settings-card"):
+                            with Vertical(classes="settings-card-header"):
+                                yield Static("TERMINAL & EXECUTION LIMITS", classes="settings-card-title")
+                                yield Static("CLI output pagination and autonomous execution boundaries.", classes="settings-card-desc")
+
+                            yield Checkbox("Disable CLI output paging automatically", True, id="ws-s-paging")
+                            yield Static("Executes 'terminal length 0' or FortiOS equivalent on session connect.", classes="settings-field-help")
+
+                            with Horizontal(classes="settings-row"):
+                                with Vertical(classes="settings-col"):
+                                    yield Label("Max steps per turn", classes="settings-field-lbl")
+                                    yield Input("25", id="ws-s-steps", type="integer")
+                                    yield Static("Turn loop limit before awaiting input.", classes="settings-field-help")
+                                with Vertical(classes="settings-col"):
+                                    yield Label("Command timeout (seconds)", classes="settings-field-lbl")
+                                    yield Input("30", id="ws-s-timeout", type="integer")
+                                    yield Static("Timeout before aborting stalled commands.", classes="settings-field-help")
+
+                        # 3. Logging & Transcripts
+                        with Vertical(classes="settings-card"):
+                            with Vertical(classes="settings-card-header"):
+                                yield Static("LOGGING & TRANSCRIPTS", classes="settings-card-title")
+                                yield Static("Audit trail retention and file paths.", classes="settings-card-desc")
+
+                            yield Checkbox("Save full session transcripts to disk", True, id="ws-s-transcripts")
+                            yield Static("Persists raw device CLI input/output and agent reasoning.", classes="settings-field-help")
+
+                            yield Label("Transcript Directory", classes="settings-field-lbl")
+                            yield Input("~/.rackhand/transcripts", id="ws-s-dir")
+                            yield Static("Path where session audit logs are stored.", classes="settings-field-help")
+
+                        # 4. Appearance
+                        with Vertical(classes="settings-card"):
+                            with Vertical(classes="settings-card-header"):
+                                yield Static("APPEARANCE", classes="settings-card-title")
+                                yield Static("Color scheme for workspace and terminal cards.", classes="settings-card-desc")
+
+                            yield Label("Color Theme", classes="settings-field-lbl")
+                            yield Select(
+                                [(t, t) for t in THEMES],
+                                value="rackhand",
+                                allow_blank=False,
+                                id="ws-s-theme",
+                            )
+                            yield Static("Terminal theme applied across all screens and widgets.", classes="settings-field-help")
+
+                        with Horizontal(classes="settings-btn-row"):
                             yield Button("Save settings", variant="primary", id="ws-s-save")
+                            yield Button("Reset defaults", id="ws-s-reset")
+                            yield Button("Return to Agent", id="ws-s-back")
 
     async def on_mount(self) -> None:
         for s in self.app.sessions:  # type: ignore[attr-defined]
@@ -517,19 +582,7 @@ class WorkspaceScreen(Screen):
         self.refresh_console_devices()
         self._render_console()
         self.update_bars()
-        try:
-            cur_s = self.app.settings
-            self.query_one("#ws-s-approval", Select).value = cur_s.approval_mode
-            self.query_one("#ws-s-redact", Checkbox).value = cur_s.redact_secrets
-            self.query_one("#ws-s-backup", Checkbox).value = cur_s.backup_before_change
-            self.query_one("#ws-s-paging", Checkbox).value = cur_s.disable_paging
-            self.query_one("#ws-s-transcripts", Checkbox).value = cur_s.keep_transcripts
-            self.query_one("#ws-s-dir", Input).value = cur_s.transcript_dir
-            self.query_one("#ws-s-steps", Input).value = str(cur_s.max_agent_steps)
-            self.query_one("#ws-s-timeout", Input).value = str(cur_s.command_timeout_s)
-            self.query_one("#ws-s-theme", Select).value = cur_s.theme
-        except Exception:
-            pass
+        self._load_settings_tab()
         try:
             p_inp = self.query_one("#prompt", PromptInput)
             s_box = self.query_one("#composer-suggestions", CommandSuggestionsBox)
@@ -1026,6 +1079,10 @@ class WorkspaceScreen(Screen):
                 self._bubble(Text(f"Unknown agent '{args}'. Type /agent list to see all available specialist agents.", style="red"))
             return
 
+        if cmd in ("settings", "config", "preferences"):
+            self.action_settings()
+            return
+
         if cmd in ("help", "?"):
             help_text = Text()
             help_text.append("RACKHAND CLI COMMANDS\n\n", style="bold white")
@@ -1035,6 +1092,8 @@ class WorkspaceScreen(Screen):
             help_text.append("      Switch directly (e.g. /agent cisco-asa, /agent fortigate)\n", style="dim")
             help_text.append("/agent list", style="bold #38bdf8")
             help_text.append("        List all specialist agents and descriptions\n", style="dim")
+            help_text.append("/settings", style="bold #38bdf8")
+            help_text.append("          Configure guardrails, execution limits & theme\n", style="dim")
             help_text.append("/clear", style="bold #38bdf8")
             help_text.append("             Clear current session chat history\n", style="dim")
             help_text.append("/help", style="bold #38bdf8")
@@ -1226,6 +1285,21 @@ class WorkspaceScreen(Screen):
         except Exception:
             pass
 
+    def _load_settings_tab(self) -> None:
+        try:
+            s = self.app.settings
+            self.query_one("#ws-s-approval", Select).value = s.approval_mode
+            self.query_one("#ws-s-redact", Checkbox).value = s.redact_secrets
+            self.query_one("#ws-s-backup", Checkbox).value = s.backup_before_change
+            self.query_one("#ws-s-paging", Checkbox).value = s.disable_paging
+            self.query_one("#ws-s-transcripts", Checkbox).value = s.keep_transcripts
+            self.query_one("#ws-s-dir", Input).value = s.transcript_dir
+            self.query_one("#ws-s-steps", Input).value = str(s.max_agent_steps)
+            self.query_one("#ws-s-timeout", Input).value = str(s.command_timeout_s)
+            self.query_one("#ws-s-theme", Select).value = s.theme if s.theme in THEMES else "rackhand"
+        except Exception:
+            pass
+
     def action_settings(self) -> None:
         try:
             main_tabs = self.query_one("#main", TabbedContent)
@@ -1233,9 +1307,46 @@ class WorkspaceScreen(Screen):
                 main_tabs.active = "tab-agent"
                 self.query_one("#prompt", Input).focus()
             else:
+                self._load_settings_tab()
                 main_tabs.active = "tab-settings"
         except Exception:
             pass
+
+    @on(Button.Pressed, "#btn-sidebar-settings")
+    @on(Button.Pressed, "#btn-composer-settings")
+    def _open_settings(self) -> None:
+        self.action_settings()
+
+    @on(Button.Pressed, "#ws-s-reset")
+    def _reset_settings_tab(self) -> None:
+        default_s = Settings()
+        try:
+            self.query_one("#ws-s-approval", Select).value = default_s.approval_mode
+            self.query_one("#ws-s-redact", Checkbox).value = default_s.redact_secrets
+            self.query_one("#ws-s-backup", Checkbox).value = default_s.backup_before_change
+            self.query_one("#ws-s-paging", Checkbox).value = default_s.disable_paging
+            self.query_one("#ws-s-transcripts", Checkbox).value = default_s.keep_transcripts
+            self.query_one("#ws-s-dir", Input).value = default_s.transcript_dir
+            self.query_one("#ws-s-steps", Input).value = str(default_s.max_agent_steps)
+            self.query_one("#ws-s-timeout", Input).value = str(default_s.command_timeout_s)
+            self.query_one("#ws-s-theme", Select).value = default_s.theme
+            self.notify("Settings reset to defaults. Click Save settings to apply.", title="Defaults")
+        except Exception:
+            pass
+
+    @on(Button.Pressed, "#ws-s-back")
+    def _back_to_agent(self) -> None:
+        try:
+            main_tabs = self.query_one("#main", TabbedContent)
+            main_tabs.active = "tab-agent"
+            self.query_one("#prompt", Input).focus()
+        except Exception:
+            pass
+
+    @on(TabbedContent.TabActivated)
+    def _on_tab_changed(self, ev: TabbedContent.TabActivated) -> None:
+        if ev.pane and ev.pane.id == "tab-settings":
+            self._load_settings_tab()
 
     @on(Button.Pressed, "#ws-s-save")
     def _save_settings_tab(self) -> None:
