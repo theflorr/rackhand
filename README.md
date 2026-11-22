@@ -1,4 +1,4 @@
-# Rackhand 🎛️
+# Rackhand
 
 **Agentic network engineering in your terminal.**
 
