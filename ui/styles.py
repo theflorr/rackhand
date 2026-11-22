@@ -266,7 +266,7 @@ Label { color: #666666; }
     background: #1e1e1e;
 }
 
-/* connect dialog — override base .dialog constraints to fill the screen properly */
+/* connect dialog - override base .dialog constraints to fill the screen properly */
 #cn-dialog {
     width: 94%;
     max-width: 160;
@@ -277,7 +277,7 @@ Label { color: #666666; }
 #cn-body { height: 1fr; margin-top: 1; }
 #prov-body { height: 1fr; }
 
-/* saved devices panel (left) — fixed width, full height via 1fr */
+/* saved devices panel (left) - fixed width, full height via 1fr */
 #cn-saved {
     width: 36;
     height: 1fr;
@@ -288,7 +288,7 @@ Label { color: #666666; }
 #saved-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
 .section { color: #555555; text-style: bold; margin-bottom: 1; padding: 0 0 0 1; }
 
-/* new device button — anchored to bottom of left pane */
+/* new device button - anchored to bottom of left pane */
 .cn-new-btn {
     width: 100%;
     margin: 1 0;
@@ -299,7 +299,7 @@ Label { color: #666666; }
 }
 .cn-new-btn:hover { background: #222222; color: #cccccc; }
 
-/* right pane — outlined, fills remaining horizontal and all vertical space */
+/* right pane - outlined, fills remaining horizontal and all vertical space */
 #cn-right {
     width: 1fr;
     height: 1fr;
@@ -308,7 +308,7 @@ Label { color: #666666; }
     margin-left: 2;
 }
 
-/* empty state placeholder — centred inside right pane */
+/* empty state placeholder - centred inside right pane */
 #cn-placeholder {
     width: 1fr;
     height: 1fr;
@@ -317,7 +317,7 @@ Label { color: #666666; }
     text-style: italic;
 }
 
-/* form — fills right pane when shown */
+/* form - fills right pane when shown */
 #cn-form { width: 1fr; height: 1fr; padding: 0; }
 #prov-form { width: 1fr; height: 100%; padding-left: 2; }
 
@@ -355,7 +355,7 @@ Label { color: #666666; }
 #cn-ssh-host-col { width: 1fr; height: auto; margin-right: 1; }
 #cn-ssh-port-col { width: 12; height: auto; }
 
-/* status line — full width, 1 line below body */
+/* status line - full width, 1 line below body */
 #connect-status { height: 1; width: 100%; padding: 0 1; color: #555555; }
 
 /* footer */
@@ -527,7 +527,7 @@ Label { color: #666666; }
 /* ── workspace ───────────────────────────────────────────────────────────── */
 #ws-body { width: 100%; height: 100%; }
 
-/* sidebar — flush left, no extra margin */
+/* sidebar - flush left, no extra margin */
 #sidebar {
     width: 25;
     height: 100%;
@@ -975,7 +975,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
     background: transparent;
 }
 
-/* ── home screen — edge-to-edge tiling layout ───────────────────────────── */
+/* ── home screen - edge-to-edge tiling layout ───────────────────────────── */
 HomeScreen { background: #0a0a0a; }
 
 #home {

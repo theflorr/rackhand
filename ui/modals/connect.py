@@ -49,13 +49,13 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
                 # ── Right: placeholder OR form ─────────────────────────────────
                 with Vertical(id="cn-right"):
 
-                    # Empty state — shown until user picks a device or hits New
+                    # Empty state - shown until user picks a device or hits New
                     yield Static(
                         "Select a device on the left",
                         id="cn-placeholder",
                     )
 
-                    # Form — hidden by default
+                    # Form - hidden by default
                     with VerticalScroll(id="cn-form"):
                         with TabbedContent(id="transport", initial="tab-serial"):
 
@@ -80,7 +80,7 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
                                     yield Button("Auto-detect", id="ser-probe", classes="cn-btn-sm")
 
                                 with Collapsible(
-                                    title="Line settings  —  8N1, no flow control",
+                                    title="Line settings  -  8N1, no flow control",
                                     collapsed=True,
                                     id="cn-line-settings",
                                 ):
@@ -157,14 +157,14 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
                                     yield Select(
                                         [("Ask on first connect", "ask"),
                                          ("Trust on first use", "tofu"),
-                                         ("Strict — must be in known_hosts", "strict")],
+                                         ("Strict - must be in known_hosts", "strict")],
                                         value="ask", allow_blank=False, id="ssh-hostkey",
                                     )
 
                         # ── Enable password + save ─────────────────────────────
                         yield Label("Enable / privileged password", classes="cn-field-label")
                         yield Input(
-                            placeholder="optional — not saved to disk",
+                            placeholder="optional - not saved to disk",
                             password=True, id="enable",
                         )
                         yield Checkbox("Save to inventory", True, id="remember")
@@ -236,7 +236,7 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
         sel = self.query_one("#ser-port", Select)
         keep = sel_value(sel)
         opts = [
-            (f"{p.device}  —  {p.description}" if p.description else p.device, p.device)
+            (f"{p.device}  -  {p.description}" if p.description else p.device, p.device)
             for p in self._ports
         ]
         sel.set_options(opts)
@@ -352,7 +352,7 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
 
     @work(exclusive=True, group="probe")
     async def _probe_baud(self, port: str) -> None:
-        """Silently probe baud rate — only updates the baud select, no noisy status."""
+        """Silently probe baud rate - only updates the baud select, no noisy status."""
         status = self.query_one("#connect-status", Static)
         status.update(Text(f"Detecting baud on {port}...", style="dim #555555"))
         try:
@@ -361,7 +361,7 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
                 self.query_one("#ser-baud", Select).value = str(res.baud)
                 status.update(Text(f"Baud detected: {res.baud}", style="dim #22c55e"))
             else:
-                status.update(Text("Could not detect baud — set it manually.", style="dim #888888"))
+                status.update(Text("Could not detect baud - set it manually.", style="dim #888888"))
         except Exception:
             status.update("")
 

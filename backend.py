@@ -1778,7 +1778,7 @@ class RealBackend(Backend):
 
             banner = (
                 f"\r\nConnected to {hostname} ({port} @ {baud}) over Serial Console\r\n"
-                f"Operating mode: {mode.upper()}  —  {prompt}\r\n\r\n"
+                f"Operating mode: {mode.upper()}  -  {prompt}\r\n\r\n"
             )
             chunk_queue.put_nowait(ConsoleChunk(session_id, banner + prompt + " ", "device"))
             return session
@@ -1844,7 +1844,7 @@ class RealBackend(Backend):
 
             banner = (
                 f"\r\nConnected to {hostname} ({profile.ssh.host}:{profile.ssh.port}) via SSH\r\n"
-                f"Operating mode: {mode.upper()}  —  {prompt}\r\n\r\n"
+                f"Operating mode: {mode.upper()}  -  {prompt}\r\n\r\n"
             )
             chunk_queue.put_nowait(ConsoleChunk(session_id, banner + prompt + " ", "device"))
             return session
