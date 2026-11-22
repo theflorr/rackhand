@@ -1,0 +1,775 @@
+"""Real LLM Agent Engine for Rackhand
+
+Provides live streaming inference, tool calling for real network hardware execution,
+rolling context memory management, multi-provider routing (OpenAI, Anthropic, Gemini, OpenRouter),
+and error recovery.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import uuid
+from typing import Any, AsyncIterator, Callable, Coroutine, Optional
+
+import httpx
+
+from models import (
+    AgentDone, AgentError, AgentEvent, AgentProposal, AgentText, AgentToolCall,
+    AgentToolResult, ApiScheme, ApprovalDecision, DeviceSession, ProposedChange,
+    ProviderConfig, Risk, Settings,
+)
+
+logger = logging.getLogger("rackhand.llm_engine")
+
+
+# ==============================================================================
+# TOOL DEFINITIONS FOR NETWORK ENGINEERING
+# ==============================================================================
+
+NETWORK_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "Execute a safe diagnostic or read-only CLI command on the connected network device "
+                "(e.g. 'show version', 'show interfaces status', 'show ip interface brief', 'show vlan brief', "
+                "'show mac address-table', 'show running-config', 'get system status', 'show conn')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The exact CLI command string to execute on the device."
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_change",
+            "description": (
+                "Propose a configuration change that modifies the device state. "
+                "This pauses execution and requests explicit human review and approval before applying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short summary of the proposed change (e.g. 'Configure Access VLAN 20 on Fa0/5')."
+                    },
+                    "commands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Sequential list of configuration commands to enter."
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Explanation of why this change is necessary and its intended effect."
+                    },
+                    "risk": {
+                        "type": "string",
+                        "enum": ["config", "danger"],
+                        "description": "Risk assessment level of this change: 'config' for standard operational changes, 'danger' for service-impacting changes (e.g. reboots, trunk pruning, ACL changes)."
+                    }
+                },
+                "required": ["title", "commands", "rationale", "risk"]
+            }
+        }
+    }
+]
+
+
+# ==============================================================================
+# CONTEXT MEMORY MANAGER
+# ==============================================================================
+
+class ContextMemoryManager:
+    """Manages multi-turn conversation memory, output pruning, and context limits."""
+
+    def __init__(self, max_context_tokens: int = 128000, max_turns: int = 20) -> None:
+        self.max_context_tokens = max_context_tokens
+        self.max_turns = max_turns
+        self.sessions: dict[str, list[dict[str, Any]]] = {}
+
+    def get_messages(self, session_id: str) -> list[dict[str, Any]]:
+        return self.sessions.setdefault(session_id, [])
+
+    def add_message(self, session_id: str, role: str, content: Any, **kwargs: Any) -> None:
+        msgs = self.get_messages(session_id)
+        msg: dict[str, Any] = {"role": role, "content": content}
+        for k, v in kwargs.items():
+            if v is not None:
+                msg[k] = v
+        msgs.append(msg)
+        self.prune_if_needed(session_id)
+
+    def prune_if_needed(self, session_id: str) -> None:
+        msgs = self.sessions.get(session_id, [])
+        if len(msgs) <= self.max_turns:
+            return
+
+        # Always preserve index 0 (System Message)
+        system_msg = msgs[0] if msgs and msgs[0].get("role") == "system" else None
+        remaining = msgs[1:] if system_msg else msgs
+
+        # Keep the most recent max_turns messages
+        pruned = remaining[-self.max_turns:]
+
+        # Ensure we never orphan tool result messages:
+        # A 'tool' message must be preceded by an assistant message with tool_calls.
+        while pruned and pruned[0].get("role") == "tool":
+            pruned.pop(0)
+
+        self.sessions[session_id] = ([system_msg] + pruned) if system_msg else pruned
+
+    @staticmethod
+    def truncate_tool_output(output: str, max_lines: int = 250) -> str:
+        """Truncate massive command outputs (e.g. show tech) to preserve context."""
+        lines = output.splitlines()
+        if len(lines) <= max_lines:
+            return output
+        kept = lines[:max_lines]
+        omitted = len(lines) - max_lines
+        return "\n".join(kept) + f"\n\n... [{omitted} lines truncated for context management]"
+
+
+# ==============================================================================
+# REAL LLM ENGINE
+# ==============================================================================
+
+class RealLLMEngine:
+    """Production LLM agent driver executing real hardware commands via live model inference."""
+
+    def __init__(self) -> None:
+        self.memory = ContextMemoryManager()
+        self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        self._agy_conversations: dict[str, str] = {}
+
+    async def aclose(self) -> None:
+        await self._http_client.aclose()
+
+    def build_system_message(self, session: Optional[DeviceSession], agent_spec: Any) -> str:
+        base_prompt = getattr(agent_spec, "system_prompt", "")
+        badge = getattr(agent_spec, "badge", "[AGENT]")
+        name = getattr(agent_spec, "name", "Specialist Agent")
+
+        # Inject real hardware context
+        if session:
+            hw_context = (
+                f"\n\n### LIVE CONNECTED HARDWARE STATUS\n"
+                f"- **Target Hostname**: {session.hostname}\n"
+                f"- **Hardware Vendor**: {session.profile.vendor.value.upper()}\n"
+                f"- **Transport**: {session.profile.transport.value.upper()}\n"
+                f"- **Current CLI Prompt**: `{session.prompt}`\n"
+                f"- **Execution Mode**: {'Unprivileged User EXEC (>)' if session.prompt.endswith('>') else 'Privileged EXEC / Config (#)'}\n"
+                f"\n"
+                f"You have direct access to the `run_command` tool to execute real CLI commands on `{session.hostname}` right now.\n"
+                f"Always query the device using `run_command` when diagnostic data is needed before drawing conclusions.\n"
+                f"If configuration changes are requested, use the `propose_change` tool so the operator can review and approve them."
+            )
+        else:
+            hw_context = (
+                "\n\n### HARDWARE STATUS\n"
+                "No live device is currently connected. You can assist the operator with network engineering questions, "
+                "troubleshooting methodologies, command syntax, configuration design, and architecture planning."
+            )
+        return f"{base_prompt}{hw_context}"
+
+    async def run_turn(
+        self,
+        prompt: str,
+        session: DeviceSession,
+        provider: ProviderConfig,
+        settings: Settings,
+        agent_spec: Any,
+        run_command_fn: Callable[[str], Coroutine[Any, Any, Any]],
+        propose_change_fn: Callable[[ProposedChange], Coroutine[Any, Any, ApprovalDecision]],
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[AgentEvent]:
+        """Execute a full agent turn with real LLM streaming and hardware tool calling."""
+        sess_id = session_id or session.id
+        badge = getattr(agent_spec, "badge", "[AGENT]")
+        name = getattr(agent_spec, "name", "Specialist Agent")
+
+        # 1. Initialize Context & System Prompt
+        history = self.memory.get_messages(sess_id)
+        if not history or history[0].get("role") != "system":
+            system_content = self.build_system_message(session, agent_spec)
+            if history:
+                history.insert(0, {"role": "system", "content": system_content})
+            else:
+                self.memory.add_message(sess_id, "system", system_content)
+        else:
+            # Update live prompt in case device mode transitioned
+            history[0]["content"] = self.build_system_message(session, agent_spec)
+
+        # Append current user prompt
+        self.memory.add_message(sess_id, "user", prompt)
+
+        # 2. Check for Google Antigravity provider (AGY CLI bridge)
+        if provider.scheme == ApiScheme.ANTIGRAVITY or provider.spec_id == "antigravity" or provider.base_url == "local:agy" or "antigravity" in provider.name.lower():
+            async for ev in self._run_antigravity_turn(
+                prompt=prompt,
+                session=session,
+                provider=provider,
+                settings=settings,
+                agent_spec=agent_spec,
+                run_command_fn=run_command_fn,
+                propose_change_fn=propose_change_fn,
+                session_id=sess_id,
+            ):
+                yield ev
+            return
+
+        # 3. Check Provider Credentials & Endpoint
+        api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
+        if not api_key:
+            yield AgentError(
+                f"{badge} {name}: No API key or access token is configured for provider {provider.name}. "
+                f"Press F2 to select a provider with valid credentials (such as OpenRouter or Claude), or scan your local system."
+            )
+            yield AgentDone(0, 0)
+            return
+
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        max_steps = getattr(settings, "max_agent_steps", 10) or 10
+
+        # 3. Agent Loop (LLM call -> Tool Execution -> Repeat until done)
+        for step in range(max_steps):
+            current_messages = list(self.memory.get_messages(sess_id))
+
+            # Build Request Payload based on provider scheme
+            endpoint, headers, payload = self._build_request(provider, current_messages)
+
+            response_data = None
+            try:
+                resp = await self._http_client.post(endpoint, headers=headers, json=payload)
+                if resp.status_code != 200:
+                    err_text = self._format_api_error(resp.status_code, resp.text, provider)
+                    yield AgentError(f"{badge} {err_text}")
+                    yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                    return
+                response_data = resp.json()
+            except httpx.TimeoutException:
+                yield AgentError(f"{badge} Request to {provider.name} timed out after 30 seconds.")
+                yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                return
+            except Exception as exc:
+                yield AgentError(f"{badge} Connection Error: {exc}")
+                yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                return
+
+            choice = response_data.get("choices", [{}])[0]
+            msg_obj = choice.get("message", {})
+            content = msg_obj.get("content") or ""
+            # Support reasoning models (DeepSeek, etc.)
+            reasoning = msg_obj.get("reasoning_content") or ""
+            if reasoning and not content:
+                content = reasoning
+            elif reasoning and content:
+                content = f"> *Thinking: {reasoning.strip()}*\n\n{content}"
+
+            tool_calls = msg_obj.get("tool_calls") or []
+            # Normalize legacy function_call format if model used it
+            if not tool_calls and msg_obj.get("function_call"):
+                tool_calls = [{
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": msg_obj["function_call"]
+                }]
+
+            # Extract token usage
+            usage = response_data.get("usage", {})
+            total_prompt_tokens = usage.get("prompt_tokens", total_prompt_tokens)
+            total_completion_tokens += usage.get("completion_tokens", 0)
+
+            # Record assistant turn in context memory
+            self.memory.add_message(sess_id, "assistant", content, tool_calls=tool_calls if tool_calls else None)
+
+            # Stream text if model replied with commentary
+            if content:
+                for chunk in self._chunk_text(content):
+                    await asyncio.sleep(0.008)
+                    yield AgentText(chunk)
+
+            # If no tool calls, the model has completed its response
+            if not tool_calls:
+                break
+
+            # 4. Process Model Tool Calls
+            for tool_call in tool_calls:
+                fn = tool_call.get("function", {})
+                fn_name = fn.get("name", "")
+                call_id = tool_call.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+
+                try:
+                    raw_args = fn.get("arguments", "{}")
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    args = {}
+
+                if fn_name == "run_command":
+                    raw_cmd = args.get("command") or args.get("cmd") or args.get("cli") or args.get("input")
+                    if raw_cmd is None and "commands" in args:
+                        raw_cmd = args.get("commands")
+                    if raw_cmd is None:
+                        continue
+
+                    # Support agents sending \r, \n, or \r\n (trailing, raw enter, or multi-line)
+                    if isinstance(raw_cmd, list):
+                        extracted_cmds = []
+                        for item in raw_cmd:
+                            item_norm = str(item).replace("\r\n", "\n").replace("\r", "\n")
+                            for line in item_norm.split("\n"):
+                                if line.strip():
+                                    extracted_cmds.append(line.strip())
+                        cmds_to_run = extracted_cmds if extracted_cmds else []
+                    else:
+                        norm_str = str(raw_cmd).replace("\r\n", "\n").replace("\r", "\n")
+                        if not norm_str.strip() and norm_str:
+                            cmds_to_run = ["\r\n"]
+                        else:
+                            split_lines = [line.strip() for line in norm_str.split("\n") if line.strip()]
+                            cmds_to_run = split_lines if split_lines else []
+
+                    if not cmds_to_run:
+                        continue
+
+                    dev_name = session.hostname if session else "disconnected"
+                    outputs_for_context = []
+
+                    for idx, cmd in enumerate(cmds_to_run):
+                        sub_call_id = f"{call_id}_{idx}" if idx > 0 else call_id
+                        disp_cmd = "<CR>" if cmd == "\r\n" else cmd
+
+                        # Determine command risk
+                        is_config = any(cmd.lower().startswith(w) for w in ("conf", "interface", "router", "ip route", "vlan", "no "))
+                        risk = Risk.CONFIG if is_config else Risk.READ
+
+                        # Yield tool call to UI
+                        yield AgentToolCall(sub_call_id, dev_name, disp_cmd, risk)
+
+                        # Execute real command on hardware
+                        try:
+                            res = await run_command_fn(cmd)
+                            output = res.output if hasattr(res, "output") else str(res)
+                            ok = res.ok if hasattr(res, "ok") else True
+                        except Exception as err:
+                            output = f"Command execution error: {err}"
+                            ok = False
+
+                        # Yield result to UI
+                        yield AgentToolResult(sub_call_id, output, ok)
+                        outputs_for_context.append(f"$ {disp_cmd}\n{output}")
+
+                    # Feed result back into conversation context
+                    combined_output = "\n".join(outputs_for_context)
+                    truncated_output = ContextMemoryManager.truncate_tool_output(combined_output)
+                    self.memory.add_message(sess_id, "tool", truncated_output, tool_call_id=call_id)
+
+                elif fn_name == "propose_change":
+                    title = args.get("title") or args.get("name") or "Proposed Change"
+                    raw_cmds = args.get("commands") or args.get("cmds") or []
+                    if not raw_cmds and args.get("command"):
+                        raw_cmds = [args.get("command")]
+
+                    commands = []
+                    if isinstance(raw_cmds, str):
+                        raw_norm = raw_cmds.replace("\r\n", "\n").replace("\r", "\n")
+                        commands = [c.strip() for c in raw_norm.split("\n") if c.strip()]
+                    elif isinstance(raw_cmds, list):
+                        for c in raw_cmds:
+                            c_norm = str(c).replace("\r\n", "\n").replace("\r", "\n")
+                            for line in c_norm.split("\n"):
+                                if line.strip():
+                                    commands.append(line.strip())
+
+                    rationale = args.get("rationale") or args.get("reason") or args.get("description") or ""
+                    risk_str = str(args.get("risk") or "config").lower()
+                    risk = Risk.DANGER if risk_str == "danger" else Risk.CONFIG
+                    dev_name = session.hostname if session else "unassigned"
+
+                    change = ProposedChange(
+                        id=uuid.uuid4().hex[:8],
+                        device=dev_name,
+                        title=title,
+                        commands=commands,
+                        risk=risk,
+                        rationale=rationale,
+                    )
+
+                    # Yield proposal to UI for operator approval
+                    yield AgentProposal(change)
+
+                    # Wait for human verdict
+                    decision = await propose_change_fn(change)
+
+                    if decision.approved:
+                        exec_results = []
+                        for idx, c in enumerate(decision.commands):
+                            c_clean = c.strip()
+                            if not c_clean:
+                                continue
+                            c_id = f"apply_{uuid.uuid4().hex[:6]}_{idx}"
+                            yield AgentToolCall(c_id, dev_name, c_clean, Risk.CONFIG)
+                            try:
+                                res = await run_command_fn(c_clean)
+                                output = res.output if hasattr(res, "output") else str(res)
+                                ok = res.ok if hasattr(res, "ok") else True
+                            except Exception as err:
+                                output = f"Error: {err}"
+                                ok = False
+                            yield AgentToolResult(c_id, output, ok)
+                            exec_results.append(f"{c_clean}: {'OK' if ok else 'ERROR'}")
+
+                        if decision.save_after:
+                            save_id = f"save_{uuid.uuid4().hex[:6]}"
+                            yield AgentToolCall(save_id, dev_name, "write memory", Risk.CONFIG)
+                            try:
+                                res = await run_command_fn("write memory")
+                                output = res.output if hasattr(res, "output") else str(res)
+                                ok = res.ok if hasattr(res, "ok") else True
+                            except Exception as err:
+                                output = f"Error: {err}"
+                                ok = False
+                            yield AgentToolResult(save_id, output, ok)
+                            exec_results.append("write memory: OK" if ok else "write memory: ERROR")
+
+                        tail = " Configuration written to NVRAM (write memory)." if decision.save_after else " Modified in RAM only."
+                        confirm_text = f"\n\n✓ **Applied {len(decision.commands)} commands to {dev_name} successfully.**{tail}"
+                        for chunk in self._chunk_text(confirm_text):
+                            await asyncio.sleep(0.006)
+                            yield AgentText(chunk)
+
+                        result_msg = f"Change approved and applied:\n" + "\n".join(exec_results)
+                    else:
+                        reject_text = "\n\nRemediation rejected by operator. Device running-config left unchanged."
+                        for chunk in self._chunk_text(reject_text):
+                            await asyncio.sleep(0.006)
+                            yield AgentText(chunk)
+                        result_msg = f"Proposal '{title}' was rejected by operator."
+
+                    self.memory.add_message(sess_id, "tool", result_msg, tool_call_id=call_id)
+
+        # Finished turn
+        yield AgentDone(total_prompt_tokens, total_completion_tokens)
+
+    async def _run_antigravity_turn(
+        self,
+        prompt: str,
+        session: Optional[DeviceSession],
+        provider: ProviderConfig,
+        settings: Settings,
+        agent_spec: Any,
+        run_command_fn: Callable[[str], Coroutine[Any, Any, Any]],
+        propose_change_fn: Callable[[ProposedChange], Coroutine[Any, Any, ApprovalDecision]],
+        session_id: str,
+    ) -> AsyncIterator[AgentEvent]:
+        badge = getattr(agent_spec, "badge", "[ANTIGRAVITY]")
+        model = provider.model or "gemini-3.8-flash-low"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        cid = self._agy_conversations.get(session_id)
+
+        system_msg = self.build_system_message(session, agent_spec)
+        current_prompt = (
+            f"{system_msg}\n\n"
+            f"### OPERATOR REQUEST\n{prompt}\n\n"
+            f"### TOOL INSTRUCTIONS\n"
+            f"You have direct access to execute diagnostic commands on the connected hardware.\n"
+            f"To run a command, you MUST output ONLY a JSON object:\n"
+            f'{{"tool_call": {{"name": "run_command", "arguments": {{"command": "<cli command>"}}}}}}\n'
+            f"To propose a configuration change, output ONLY a JSON object:\n"
+            f'{{"tool_call": {{"name": "propose_change", "arguments": {{"title": "...", "commands": ["..."], "rationale": "...", "risk": "config"}}}}}}\n'
+            f"If diagnostic data is needed before drawing conclusions, call run_command.\n"
+            f"If answering the operator directly, provide your engineering analysis in clean markdown without JSON."
+        ) if not cid else prompt
+
+        max_steps = getattr(settings, "max_agent_steps", 10) or 10
+
+        for step in range(max_steps):
+            cmd = ["agy", "--output-format", "json", "--effort", "low", "--model", model]
+            if cid:
+                cmd.extend(["--conversation", cid])
+            cmd.extend(["-p", current_prompt])
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+            except Exception as exc:
+                yield AgentError(f"{badge} Failed to launch AGY CLI: {exc}")
+                yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                return
+
+            if proc.returncode != 0:
+                err_text = stderr.decode("utf-8", errors="replace").strip() or stdout.decode("utf-8", errors="replace").strip()
+                yield AgentError(f"{badge} AGY CLI error: {err_text[:200]}")
+                yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                return
+
+            try:
+                data = json.loads(stdout.decode("utf-8", errors="replace"))
+            except Exception:
+                yield AgentError(f"{badge} Invalid JSON output from AGY CLI: {stdout.decode('utf-8', errors='replace')[:200]}")
+                yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                return
+
+            cid = data.get("conversation_id")
+            if cid:
+                self._agy_conversations[session_id] = cid
+
+            resp_text = data.get("response", "")
+            usage = data.get("usage", {})
+            total_prompt_tokens = usage.get("input_tokens", total_prompt_tokens)
+            total_completion_tokens += usage.get("output_tokens", 0)
+
+            # Check for tool call in resp_text
+            tc_obj = None
+            try:
+                parsed = json.loads(resp_text.strip())
+                if isinstance(parsed, dict) and "tool_call" in parsed:
+                    tc_obj = parsed["tool_call"]
+            except Exception:
+                m = re.search(r'```(?:json)?\s*(\{.*?"tool_call":\s*\{.*?\}.*?\})\s*```', resp_text, re.DOTALL)
+                if m:
+                    try:
+                        parsed = json.loads(m.group(1))
+                        if isinstance(parsed, dict) and "tool_call" in parsed:
+                            tc_obj = parsed["tool_call"]
+                    except Exception:
+                        pass
+
+            if tc_obj:
+                fn_name = tc_obj.get("name", "")
+                args = tc_obj.get("arguments", {})
+                call_id = f"call_{uuid.uuid4().hex[:8]}"
+
+                if fn_name == "run_command":
+                    raw_cmd = (args.get("command") or args.get("cmd") or args.get("cli") or args.get("input") or "")
+                    if not raw_cmd and "commands" in args:
+                        raw_cmd = args.get("commands")
+
+                    if isinstance(raw_cmd, list):
+                        extracted_cmds = []
+                        for item in raw_cmd:
+                            item_norm = str(item).replace("\r\n", "\n").replace("\r", "\n")
+                            for line in item_norm.split("\n"):
+                                if line.strip():
+                                    extracted_cmds.append(line.strip())
+                        cmds_to_run = extracted_cmds if extracted_cmds else []
+                    else:
+                        norm_str = str(raw_cmd).replace("\r\n", "\n").replace("\r", "\n")
+                        if not norm_str.strip() and norm_str:
+                            cmds_to_run = ["\r\n"]
+                        else:
+                            split_lines = [line.strip() for line in norm_str.split("\n") if line.strip()]
+                            cmds_to_run = split_lines if split_lines else []
+
+                    if not cmds_to_run:
+                        continue
+
+                    dev_name = session.hostname if session else "disconnected"
+                    outputs_for_context = []
+
+                    for idx, cli_cmd in enumerate(cmds_to_run):
+                        sub_call_id = f"{call_id}_{idx}" if idx > 0 else call_id
+                        disp_cmd = "<CR>" if cli_cmd == "\r\n" else cli_cmd
+
+                        is_config = any(cli_cmd.lower().startswith(w) for w in ("conf", "interface", "router", "ip route", "vlan", "no "))
+                        risk = Risk.CONFIG if is_config else Risk.READ
+
+                        yield AgentToolCall(sub_call_id, dev_name, disp_cmd, risk)
+
+                        try:
+                            res = await run_command_fn(cli_cmd)
+                            output = res.output if hasattr(res, "output") else str(res)
+                            ok = res.ok if hasattr(res, "ok") else True
+                        except Exception as err:
+                            output = f"Command execution error: {err}"
+                            ok = False
+
+                        yield AgentToolResult(sub_call_id, output, ok)
+                        outputs_for_context.append(f"$ {disp_cmd}\n{output}")
+
+                    combined_output = "\n".join(outputs_for_context)
+                    truncated_output = ContextMemoryManager.truncate_tool_output(combined_output)
+                    current_prompt = (
+                        f"Result of execution on {dev_name}:\n```\n{truncated_output}\n```\n"
+                        f"If more diagnostic commands are required, call run_command. Otherwise, provide your analysis to the operator in markdown."
+                    )
+                    continue
+
+                elif fn_name == "propose_change":
+                    title = args.get("title") or "Proposed Change"
+                    raw_cmds = args.get("commands") or args.get("cmds") or []
+                    if not raw_cmds and args.get("command"):
+                        raw_cmds = [args.get("command")]
+
+                    commands = []
+                    if isinstance(raw_cmds, str):
+                        raw_norm = raw_cmds.replace("\r\n", "\n").replace("\r", "\n")
+                        commands = [c.strip() for c in raw_norm.split("\n") if c.strip()]
+                    elif isinstance(raw_cmds, list):
+                        for c in raw_cmds:
+                            c_norm = str(c).replace("\r\n", "\n").replace("\r", "\n")
+                            for line in c_norm.split("\n"):
+                                if line.strip():
+                                    commands.append(line.strip())
+
+                    rationale = args.get("rationale") or ""
+                    risk_str = str(args.get("risk") or "config").lower()
+                    risk = Risk.DANGER if risk_str == "danger" else Risk.CONFIG
+                    dev_name = session.hostname if session else "unassigned"
+
+                    change = ProposedChange(
+                        id=uuid.uuid4().hex[:8],
+                        device=dev_name,
+                        title=title,
+                        commands=commands,
+                        risk=risk,
+                        rationale=rationale,
+                    )
+
+                    yield AgentProposal(change)
+                    decision = await propose_change_fn(change)
+
+                    if decision.approved:
+                        exec_results = []
+                        for idx, c in enumerate(decision.commands):
+                            c_clean = c.strip()
+                            if not c_clean:
+                                continue
+                            c_id = f"apply_{uuid.uuid4().hex[:6]}_{idx}"
+                            yield AgentToolCall(c_id, dev_name, c_clean, Risk.CONFIG)
+                            try:
+                                res = await run_command_fn(c_clean)
+                                output = res.output if hasattr(res, "output") else str(res)
+                                ok = res.ok if hasattr(res, "ok") else True
+                            except Exception as err:
+                                output = f"Error: {err}"
+                                ok = False
+                            yield AgentToolResult(c_id, output, ok)
+                            exec_results.append(f"{c_clean}: {'OK' if ok else 'ERROR'}")
+
+                        if decision.save_after:
+                            save_id = f"save_{uuid.uuid4().hex[:6]}"
+                            yield AgentToolCall(save_id, dev_name, "write memory", Risk.CONFIG)
+                            try:
+                                res = await run_command_fn("write memory")
+                                output = res.output if hasattr(res, "output") else str(res)
+                                ok = res.ok if hasattr(res, "ok") else True
+                            except Exception as err:
+                                output = f"Error: {err}"
+                                ok = False
+                            yield AgentToolResult(save_id, output, ok)
+                            exec_results.append("write memory: OK" if ok else "write memory: ERROR")
+
+                        tail = " Configuration written to NVRAM (write memory)." if decision.save_after else " Modified in RAM only."
+                        confirm_text = f"\n\n✓ **Applied {len(decision.commands)} commands to {dev_name} successfully.**{tail}"
+                        for chunk in self._chunk_text(confirm_text):
+                            await asyncio.sleep(0.006)
+                            yield AgentText(chunk)
+
+                        result_msg = f"Change approved and applied:\n" + "\n".join(exec_results)
+                    else:
+                        reject_text = "\n\nRemediation rejected by operator. Device running-config left unchanged."
+                        for chunk in self._chunk_text(reject_text):
+                            await asyncio.sleep(0.006)
+                            yield AgentText(chunk)
+                        result_msg = f"Proposal '{title}' was rejected by operator."
+
+                    current_prompt = f"Change proposal status:\n{result_msg}\nProceed with summary."
+                    continue
+
+            # No tool call; stream assistant markdown
+            for chunk in self._chunk_text(resp_text):
+                await asyncio.sleep(0.008)
+                yield AgentText(chunk)
+            break
+
+        yield AgentDone(total_prompt_tokens, total_completion_tokens)
+
+    def _build_request(self, provider: ProviderConfig, messages: list[dict[str, Any]]) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """Format request URL, headers, and payload according to API scheme."""
+        base_url = (provider.base_url or "https://api.openai.com/v1").rstrip("/")
+        api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
+
+        # Normalize endpoint
+        if "chat/completions" not in base_url and not base_url.endswith("/v1"):
+            endpoint = f"{base_url}/chat/completions"
+        elif base_url.endswith("/v1"):
+            endpoint = f"{base_url}/chat/completions"
+        else:
+            endpoint = base_url
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        if "openrouter" in base_url.lower():
+            headers["HTTP-Referer"] = "https://github.com/rackhand"
+            headers["X-Title"] = "Rackhand Network Assistant"
+
+        # Select model
+        model = provider.model or "meta-llama/llama-3.3-70b-instruct"
+        # Bounded max output tokens to prevent OpenRouter 402 quota rejections
+        max_tokens = provider.max_output if provider.max_output and provider.max_output > 0 else 2048
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "tools": NETWORK_TOOLS if provider.supports_tools else None,
+            "tool_choice": "auto" if provider.supports_tools else None,
+            "max_tokens": max_tokens,
+            "temperature": provider.temperature if hasattr(provider, "temperature") else 0.2,
+        }
+        # Filter None
+        payload = {k: v for k, v in payload.items() if v is not None}
+
+        return endpoint, headers, payload
+
+    def _format_api_error(self, status: int, body: str, provider: ProviderConfig) -> str:
+        """Format API errors into helpful actionable guidance."""
+        try:
+            d = json.loads(body)
+            msg = d.get("error", {}).get("message") or d.get("message") or body
+        except Exception:
+            msg = body
+
+        if status == 401:
+            return f"Authentication failed (401) on {provider.name}. Verify your API key or token in Model settings (F2)."
+        if status == 402:
+            return f"Insufficient credits (402) on {provider.name} for model '{provider.model}'. Switch to a free/lower tier model in F2 or top up credits."
+        if status == 403:
+            return (
+                f"Access forbidden (403) on {provider.name}: {msg}\n"
+                f"If using Google Antigravity, note that its local OAuth token is scoped for Cloud Platform / AI Studio. "
+                f"Press F2 to select OpenRouter (claude-sonnet-5.5) which is verified active on your system."
+            )
+        if status == 404:
+            return f"Model '{provider.model}' was not found on {provider.name} (404). Please select an active model in F2."
+        if status == 429:
+            return f"Rate limit exceeded (429) on {provider.name}. Please wait a moment before sending another request."
+        return f"HTTP {status} from {provider.name}: {msg}"
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int = 12) -> list[str]:
+        words = text.split(" ")
+        chunks = []
+        for i in range(0, len(words), chunk_size):
+            chunks.append(" ".join(words[i:i + chunk_size]) + " ")
+        return chunks

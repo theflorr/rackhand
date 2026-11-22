@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rackhand"
+version = "0.1.0"
+description = "Agentic network configuration for the terminal"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.70.0",
+    "rich>=13.0.0",
+    "paramiko>=3.0.0",
+    "pyserial>=3.5",
+    "httpx>=0.25.0",
+]
+
+[project.scripts]
+rackhand = "app:main"
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "agents",
+    "backend",
+    "llm_engine",
+    "models",
+    "subscription_detector",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ui*", "notes*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.txt", "*.json", "*.tcss"]
