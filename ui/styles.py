@@ -723,9 +723,12 @@ Label { color: #666666; }
 }
 #sidebar-banner {
     height: auto;
-    margin: 1 0 1 0;
-    padding: 0 0 1 0;
+    margin: 1 0 0 0;
+    padding: 0;
     border-bottom: solid #1c1c24;
+}
+#sidebar #sec-devices {
+    margin-top: 0;
 }
 .sidebar-header {
     height: 1;

@@ -512,7 +512,7 @@ class WorkspaceScreen(Screen):
         with Horizontal(id="ws-body"):
             with Vertical(id="sidebar"):
                 yield Static(build_sidebar_banner(), id="sidebar-banner")
-                yield Label("devices", classes="section")
+                yield Label("devices", classes="section", id="sec-devices")
                 yield OptionList(id="device-list")
                 with Horizontal(classes="sidebar-btn-row"):
                     yield Button("+ connect device", id="add-device")
