@@ -26,6 +26,11 @@ venv/
 env/
 ENV/
 
+# Testing & runtime
+.pytest_cache/
+.rackhand/
+*.log
+
 # IDE and OS files
 .vscode/
 .idea/
