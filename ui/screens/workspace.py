@@ -470,7 +470,7 @@ class WorkspaceScreen(Screen):
             trans = s.profile.transport.value
             t = Text.assemble(
                 (f"  {name}", "bold white" if is_active else "#999999"),
-                (f"  {trans}", "bold #38bdf8" if is_active else "dim #666666"),
+                (f"  {trans}", "bold #e4e4e7" if is_active else "dim #666666"),
             )
             lst.add_option(Option(t, id=s.id))
             if is_active:
@@ -742,7 +742,7 @@ class WorkspaceScreen(Screen):
 
         t_top = Text()
         t_top.append(f"{sess_title.upper()}\n", style="bold white")
-        t_top.append("▲ Notice: ", style="bold #f59e0b")
+        t_top.append("▲ Notice: ", style="bold #e4e4e7")
         t_top.append("Commands target live infrastructure. Make sure you know what your doing.", style="dim #a0a0a0")
 
         rule = Rule(style="#262626")
@@ -826,11 +826,11 @@ class WorkspaceScreen(Screen):
         line_count = len(buf)
 
         if busy:
-            badge.update(Text("● RUNNING", style="bold #f59e0b"))
+            badge.update(Text("● RUNNING", style="bold #d4d4d8"))
             badge.add_class("-busy")
             badge.remove_class("-offline")
         else:
-            badge.update(Text("● CONNECTED", style="bold #10b981"))
+            badge.update(Text("● CONNECTED", style="bold #e4e4e7"))
             badge.remove_class("-busy")
             badge.remove_class("-offline")
 
@@ -914,7 +914,7 @@ class WorkspaceScreen(Screen):
         try:
             status_text = Text()
             if self.current_mode == "plan":
-                status_text.append("[PLAN MODE]  ", style="bold #38bdf8")
+                status_text.append("[PLAN MODE]  ", style="bold #e4e4e7")
             count = len(self.app.sessions)
             if count > 0:
                 status_text.append(f"{count} device{'s' if count != 1 else ''} in scope", style="#999999")
@@ -947,9 +947,9 @@ class WorkspaceScreen(Screen):
 
             # Dynamic color coding: normal (<70%), warning (70-90%), critical (>90%)
             if pct >= 90:
-                token_style = "bold #ef4444"
+                token_style = "bold #f87171"
             elif pct >= 70:
-                token_style = "bold #f59e0b"
+                token_style = "bold #d4d4d8"
             else:
                 token_style = "dim #888888"
 
@@ -1154,8 +1154,8 @@ class WorkspaceScreen(Screen):
         if cmd == "plan":
             if self.current_mode == "plan":
                 self._bubble(Panel(
-                    Text("Plan mode is already enabled.\nType /build to exit plan mode.", style="bold #38bdf8"),
-                    border_style="#0284c7",
+                    Text("Plan mode is already enabled.\nType /build to exit plan mode.", style="bold #e4e4e7"),
+                    border_style="#3f3f46",
                     box=box.ROUNDED,
                     title="Plan Mode Active",
                     padding=(0, 1),
@@ -1187,8 +1187,8 @@ class WorkspaceScreen(Screen):
         if cmd == "build":
             if self.current_mode == "build":
                 self._bubble(Panel(
-                    Text("Already in Build mode (normal execution workflow).\nType /plan to enter plan mode.", style="bold #22c55e"),
-                    border_style="#16a34a",
+                    Text("Already in Build mode (normal execution workflow).\nType /plan to enter plan mode.", style="bold #e4e4e7"),
+                    border_style="#3f3f46",
                     box=box.ROUNDED,
                     title="Build Mode Active",
                     padding=(0, 1),
@@ -1247,27 +1247,27 @@ class WorkspaceScreen(Screen):
         if cmd in ("help", "?"):
             help_text = Text()
             help_text.append("RACKHAND CLI COMMANDS\n\n", style="bold white")
-            help_text.append("/plan", style="bold #38bdf8")
+            help_text.append("/plan", style="bold white")
             help_text.append("              Enter plan mode (discovery, read-only inspection, task planning)\n", style="dim")
-            help_text.append("/build", style="bold #38bdf8")
+            help_text.append("/build", style="bold white")
             help_text.append("             Exit plan mode to normal execution (apply changes & run tasks)\n", style="dim")
-            help_text.append("/compact", style="bold #38bdf8")
+            help_text.append("/compact", style="bold white")
             help_text.append("           Summarize session checkpoint, clear history & continue\n", style="dim")
-            help_text.append("/fork", style="bold #38bdf8")
+            help_text.append("/fork", style="bold white")
             help_text.append("              Clone conversation and open it in a new session\n", style="dim")
-            help_text.append("/rename", style="bold #38bdf8")
+            help_text.append("/rename", style="bold white")
             help_text.append("            Rename the current session title (/rename <title>)\n", style="dim")
-            help_text.append("/effort", style="bold #38bdf8")
+            help_text.append("/effort", style="bold white")
             help_text.append("            Choose model reasoning effort / variant (/variant, /thinking)\n", style="dim")
-            help_text.append("/agent", style="bold #38bdf8")
+            help_text.append("/agent", style="bold white")
             help_text.append("             Expand specialist agent selector dropdown\n", style="dim")
-            help_text.append("/usage", style="bold #38bdf8")
+            help_text.append("/usage", style="bold white")
             help_text.append("             Show provider usage, rate limits & token windows\n", style="dim")
-            help_text.append("/settings", style="bold #38bdf8")
+            help_text.append("/settings", style="bold white")
             help_text.append("          Configure guardrails, execution limits & theme\n", style="dim")
-            help_text.append("/clear", style="bold #38bdf8")
+            help_text.append("/clear", style="bold white")
             help_text.append("             Clear current session chat history\n", style="dim")
-            help_text.append("/help", style="bold #38bdf8")
+            help_text.append("/help", style="bold white")
             help_text.append("              Show this help menu", style="dim")
             self._bubble(Panel(help_text, border_style="#222222", box=box.ROUNDED, padding=(0, 1)))
             return
@@ -1292,7 +1292,7 @@ class WorkspaceScreen(Screen):
             if found:
                 self._bubble(Text.assemble(
                     ("Active Specialist Agent: ", "white"),
-                    (f"{found.badge} {found.name}\n", "bold #38bdf8"),
+                    (f"{found.badge} {found.name}\n", "bold #e4e4e7"),
                     (f"{found.description}", "dim")
                 ))
                 try:
@@ -1410,13 +1410,13 @@ class WorkspaceScreen(Screen):
                 elif isinstance(ev, AgentError):
                     active_assistant_msg = None
                     active_tool_bundle = None
-                    self._bubble(Panel(Text(ev.message, style="bold red"), title="Error", border_style="red",
+                    self._bubble(Panel(Text(ev.message, style="bold #f87171"), title="Error", border_style="#7f1d1d",
                                        title_align="left"))
         except asyncio.CancelledError:
             self._bubble(Text("■ execution aborted", style="dim"))
             raise
         except Exception as exc:
-            self._bubble(Panel(Text(str(exc), style="bold red"), title="Agent Error", border_style="red",
+            self._bubble(Panel(Text(str(exc), style="bold #f87171"), title="Agent Error", border_style="#7f1d1d",
                                title_align="left"))
         finally:
             self._set_busy(False)
@@ -1574,7 +1574,7 @@ class WorkspaceScreen(Screen):
             elements: list[Any] = [t]
 
             if snap.is_subscription and snap.subscription_windows:
-                table = Table(box=box.SIMPLE, show_header=True, header_style="bold #38bdf8", border_style="#262626", padding=(0, 1))
+                table = Table(box=box.SIMPLE, show_header=True, header_style="bold #e4e4e7", border_style="#262626", padding=(0, 1))
                 table.add_column("Quota Window", style="bold white")
                 table.add_column("Window", justify="center", width=8)
                 table.add_column("Remaining", justify="right", width=12)
@@ -1583,8 +1583,8 @@ class WorkspaceScreen(Screen):
                 table.add_column("Refreshes At", justify="left")
 
                 for w in snap.subscription_windows:
-                    rem_style = "bold #10b981" if w.remaining_percent >= 50 else ("bold #f59e0b" if w.remaining_percent >= 20 else "bold #ef4444")
-                    cd_style = "bold #10b981" if "ready" in w.cooldown_display.lower() else "bold #f59e0b"
+                    rem_style = "bold #e4e4e7" if w.remaining_percent >= 50 else ("bold #d4d4d8" if w.remaining_percent >= 20 else "bold #f87171")
+                    cd_style = "bold #e4e4e7" if "ready" in w.cooldown_display.lower() else "bold #d4d4d8"
                     table.add_row(
                         w.name,
                         f"[{w.window.upper()}]" if w.window else "-",
@@ -1607,7 +1607,7 @@ class WorkspaceScreen(Screen):
                     if rl.remaining_tokens is not None and rl.limit_tokens:
                         extra_lines.append(f"TPM: {rl.remaining_tokens:,}/{rl.limit_tokens:,}")
                 if extra_lines:
-                    elements.append(Text("  ·  ".join(extra_lines), style="bold #10b981"))
+                    elements.append(Text("  ·  ".join(extra_lines), style="bold #e4e4e7"))
 
             self._bubble(Panel(Group(*elements), title="usage", title_align="left", border_style="#222222", box=box.ROUNDED, padding=(0, 1)))
 
@@ -1777,9 +1777,9 @@ class WorkspaceScreen(Screen):
         self._set_busy(True)
         progress_msg = GenericMessage(
             Panel(
-                Text("Compacting conversation history and generating session checkpoint...", style="italic #38bdf8"),
+                Text("Compacting conversation history and generating session checkpoint...", style="italic #d4d4d8"),
                 title="compacting",
-                border_style="#0284c7",
+                border_style="#3f3f46",
                 box=box.ROUNDED,
                 padding=(0, 1),
             )
@@ -1846,9 +1846,9 @@ class WorkspaceScreen(Screen):
                 pass
             self.notify(f"Compaction failed: {exc}", severity="error")
             self._bubble(Panel(
-                Text(f"Compaction failed: {exc}", style="bold red"),
+                Text(f"Compaction failed: {exc}", style="bold #f87171"),
                 title="Compaction Error",
-                border_style="red",
+                border_style="#7f1d1d",
                 box=box.ROUNDED,
                 padding=(0, 1),
             ))
@@ -1931,16 +1931,16 @@ class WorkspaceScreen(Screen):
                 extra = f"\nActive Model variant switched to: {model_swapped}" if model_swapped else ""
                 self.notify(f"Reasoning effort set to: {normalized.upper()}", title="Model Effort")
                 self._bubble(Panel(
-                    Text(f"Model reasoning effort updated to: {normalized.upper()}{extra}\nChoice has been saved and will persist across sessions.", style="bold #38bdf8"),
-                    border_style="#0284c7",
+                    Text(f"Model reasoning effort updated to: {normalized.upper()}{extra}\nChoice has been saved and will persist across sessions.", style="bold #e4e4e7"),
+                    border_style="#3f3f46",
                     box=box.ROUNDED,
                     title="Model Effort",
                     padding=(0, 1),
                 ))
             else:
                 self._bubble(Panel(
-                    Text(f"Unknown effort level '{arg}'.\nValid options: off, low, medium, high, max\nUsage: /effort <level>", style="bold #f59e0b"),
-                    border_style="#d97706",
+                    Text(f"Unknown effort level '{arg}'.\nValid options: off, low, medium, high, max\nUsage: /effort <level>", style="bold #e4e4e7"),
+                    border_style="#52525b",
                     box=box.ROUNDED,
                     title="Invalid Effort",
                     padding=(0, 1),
@@ -1949,8 +1949,8 @@ class WorkspaceScreen(Screen):
 
         cur = getattr(self.app.settings, "reasoning_effort", "medium") or "medium"
         self._bubble(Panel(
-            Text(f"Current reasoning effort: {cur.upper()}\nUsage: /effort <level>\nValid options: off, low, medium, high, max", style="bold #38bdf8"),
-            border_style="#0284c7",
+            Text(f"Current reasoning effort: {cur.upper()}\nUsage: /effort <level>\nValid options: off, low, medium, high, max", style="bold #e4e4e7"),
+            border_style="#3f3f46",
             box=box.ROUNDED,
             title="Model Effort",
             padding=(0, 1),
@@ -1961,9 +1961,9 @@ class WorkspaceScreen(Screen):
         title = new_title.strip()
         if not title:
             self._bubble(Panel(
-                Text("Usage: /rename <new title>\nRenames the current active chat session.", style="bold #f59e0b"),
+                Text("Usage: /rename <new title>\nRenames the current active chat session.", style="bold #e4e4e7"),
                 title="Rename Session Title",
-                border_style="#d97706",
+                border_style="#52525b",
                 box=box.ROUNDED,
                 padding=(0, 1),
             ))
@@ -1980,9 +1980,9 @@ class WorkspaceScreen(Screen):
         self.update_bars()
         self.notify(f"Session renamed to: {title}", title="Session Renamed")
         self._bubble(Panel(
-            Text(f"Session renamed to: {title}", style="bold #38bdf8"),
+            Text(f"Session renamed to: {title}", style="bold #e4e4e7"),
             title="Session Renamed",
-            border_style="#0284c7",
+            border_style="#3f3f46",
             box=box.ROUNDED,
             padding=(0, 1),
         ))

@@ -23,7 +23,7 @@ class SelectableStatic(Static):
 
 from models import ConsoleChunk, DeviceSession, Risk, RISK_LABEL
 
-RISK_STYLE = {Risk.READ: "dim", Risk.CONFIG: "#e0e0e0", Risk.DANGER: "bold red"}
+RISK_STYLE = {Risk.READ: "dim", Risk.CONFIG: "#e0e0e0", Risk.DANGER: "bold #f87171"}
 RISK_LABEL = {Risk.READ: "READ-ONLY", Risk.CONFIG: "CHANGES CONFIG", Risk.DANGER: "DANGEROUS"}
 _PILL = {
     "ok": "bold #0a0a0a on #d0d0d0",
@@ -52,7 +52,7 @@ def highlight_config(text: str) -> Text:
     t.highlight_regex(r"\b(?:[0-9a-fA-F]{4}\.){2}[0-9a-fA-F]{4}\b", "white")
     t.highlight_regex(r"(?m)^\s*(?:interface|router|vlan|config|edit|ip access-list|line|hostname|boot|aaa|spanning-tree)\b.*$", "bold white")
     t.highlight_regex(r"\b(?:GigabitEthernet|TenGigabitEthernet|FastEthernet|Ethernet|Loopback|Vlan|Port-channel|mgmt0|Gi|Te|Fa|Lo)\d+(?:/\d+)*(?:\.\d+)?\b", "bold white")
-    t.highlight_regex(r"\b(?:shutdown|deny|disable|down|Invalid|administratively down|notconnect|ERROR|FAIL|critical)\b", "bold red")
+    t.highlight_regex(r"\b(?:shutdown|deny|disable|down|Invalid|administratively down|notconnect|ERROR|FAIL|critical)\b", "bold #f87171")
     t.highlight_regex(r"\b(?:permit|enable|up|connected|active|NORMAL|OK|SUCCESS|trunk|full|a-full)\b", "bold white")
     t.highlight_regex(r"(?m)^\s*[!#%].*$", "dim italic")
     return t
@@ -325,7 +325,7 @@ Label { color: #666666; }
 
 #p-head { height: auto; margin-bottom: 0; }
 #p-note { height: auto; margin-bottom: 1; }
-#p-detected-row { height: auto; margin-top: 1; margin-bottom: 1; padding: 0 1; background: #141414; border-left: solid #3b82f6; align-vertical: middle; }
+#p-detected-row { height: auto; margin-top: 1; margin-bottom: 1; padding: 0 1; background: #141414; border-left: solid #71717a; align-vertical: middle; }
 #p-detected-info { width: 1fr; height: auto; }
 #p-detected-title { height: 1; color: #ffffff; text-style: bold; }
 #p-detected-desc { height: auto; color: #888888; }
@@ -695,7 +695,7 @@ Label { color: #666666; }
     color: #ffffff;
 }
 
-.warn { color: #f59e0b; margin-top: 1; }
+.warn { color: #d4d4d8; margin-top: 1; }
 
 /* ── workspace ───────────────────────────────────────────────────────────── */
 #ws-body { width: 100%; height: 100%; }
@@ -718,7 +718,7 @@ Label { color: #666666; }
 }
 #sidebar-divider:hover,
 #sidebar-divider.dragging {
-    color: #3b82f6;
+    color: #e4e4e7;
     background: #0a0a0a;
 }
 #sidebar-banner {
@@ -774,7 +774,7 @@ Label { color: #666666; }
 }
 .session-row.active {
     background: #1e1e2e;
-    border-left: solid #38bdf8;
+    border-left: solid #e4e4e7;
 }
 .session-row.active:hover,
 .session-row.active.hovered {
@@ -811,7 +811,7 @@ Label { color: #666666; }
     color: #ffffff;
 }
 .sidebar-action-btn:focus {
-    background: #0284c7;
+    background: #27272a;
     color: #ffffff;
 }
 #sidebar Button {
@@ -843,8 +843,8 @@ Label { color: #666666; }
     visibility: visible;
 }
 #sidebar Button.session-del-btn:hover {
-    color: #ef4444;
-    background: #251414;
+    color: #f87171;
+    background: #1c1c24;
     text-style: bold;
 }
 
@@ -1076,7 +1076,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 #console-status-badge {
     width: auto;
     height: 1;
-    color: #10b981;
+    color: #e4e4e7;
     text-style: bold;
     margin-right: 1;
     padding: 0 1;
@@ -1084,7 +1084,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 
 #console-status-badge.-busy {
-    color: #f59e0b;
+    color: #d4d4d8;
 }
 
 #console-status-badge.-offline {

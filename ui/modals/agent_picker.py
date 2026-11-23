@@ -72,8 +72,8 @@ class AgentPickerModal(ModalScreen[Optional[str]]):
             marker = "● " if is_active else "  "
 
             opt_text = Text.assemble(
-                (marker, "bold #38bdf8" if is_active else "dim"),
-                (f"{agent.badge} ", "bold #f59e0b" if "auto" in agent.id else "bold cyan"),
+                (marker, "bold #e4e4e7" if is_active else "dim"),
+                (f"{agent.badge} ", "bold #ffffff" if "auto" in agent.id else "bold #d4d4d8"),
                 (f"{agent.name}\n", "bold white"),
                 (f"   {agent.description[:52]}...", "dim"),
             )
@@ -93,7 +93,7 @@ class AgentPickerModal(ModalScreen[Optional[str]]):
         self._selected_agent_id = agent.id
 
         title_text = Text.assemble(
-            (f"{agent.badge} ", "bold #f59e0b" if "auto" in agent.id else "bold cyan"),
+            (f"{agent.badge} ", "bold #ffffff" if "auto" in agent.id else "bold #d4d4d8"),
             (agent.name, "bold white"),
             (f"  [{agent.vendor.upper()}]", "dim italic"),
         )

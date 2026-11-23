@@ -215,7 +215,7 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
             self._rebuild_list(self.query_one("#prov-search", Input).value)
             status.update(Text(f"Scan complete: {len(subs)} subscription(s) found", style="white"))
         except Exception as exc:
-            status.update(Text(f"Scan failed: {exc}", style="#ef4444"))
+            status.update(Text(f"Scan failed: {exc}", style="bold #f87171"))
 
     # ---- list ----
     def _rebuild_list(self, query: str) -> None:
@@ -559,7 +559,7 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
                 status.update(Text(f"Found {len(models)} models", style="white"))
         except Exception as exc:
             if self.is_mounted:
-                status.update(Text(f"Query error: {exc}", style="#ef4444"))
+                status.update(Text(f"Query error: {exc}", style="bold #f87171"))
 
     @on(Select.Changed, "#p-models")
     def _model_picked(self, ev: Select.Changed) -> None:
@@ -586,7 +586,7 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
                                                          else " - warning: tools not supported")
             status.update(Text(f"Connected ({res.latency_ms} ms){tool_note}", style="white"))
         else:
-            status.update(Text(f"Connection failed: {res.message}", style="#ef4444"))
+            status.update(Text(f"Connection failed: {res.message}", style="bold #f87171"))
 
     @on(Button.Pressed, "#p-save")
     def _save_pressed(self) -> None:

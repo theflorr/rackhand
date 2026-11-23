@@ -359,7 +359,7 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
             res = await self.app.backend.probe_device(port, transport=Transport.SERIAL)  # type: ignore[attr-defined]
             if res.ok and str(res.baud) in BAUDS:
                 self.query_one("#ser-baud", Select).value = str(res.baud)
-                status.update(Text(f"Baud detected: {res.baud}", style="dim #22c55e"))
+                status.update(Text(f"Baud detected: {res.baud}", style="dim #e4e4e7"))
             else:
                 status.update(Text("Could not detect baud - set it manually.", style="dim #888888"))
         except Exception:
@@ -502,7 +502,7 @@ class ConnectScreen(ModalScreen[Optional[DeviceSession]]):
         try:
             session = await self.app.backend.connect(profile, secrets)  # type: ignore[attr-defined]
         except Exception as exc:
-            status.update(Text(f"Connection failed: {exc}", style="#ef4444"))
+            status.update(Text(f"Connection failed: {exc}", style="bold #f87171"))
             btn.disabled = False
             return
         if session.hostname:

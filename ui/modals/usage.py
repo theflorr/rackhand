@@ -42,11 +42,11 @@ def _make_remaining_bar(pct: float, width: int = 28) -> Text:
     empty_len = width - filled_len
 
     if clamped >= 50.0:
-        fill_style = "bold #10b981"  # Emerald green
+        fill_style = "bold #e4e4e7"  # Clean white/silver
     elif clamped >= 20.0:
-        fill_style = "bold #f59e0b"  # Amber warning
+        fill_style = "bold #d4d4d8"  # Slate warning
     else:
-        fill_style = "bold #ef4444"  # Red critical
+        fill_style = "bold #f87171"  # Muted red critical
 
     t = Text()
     t.append("[", style="#555555")
@@ -64,11 +64,11 @@ def _make_context_bar(pct: float, width: int = 28) -> Text:
     empty_len = width - filled_len
 
     if clamped >= 90.0:
-        fill_style = "bold #ef4444"
+        fill_style = "bold #f87171"
     elif clamped >= 70.0:
-        fill_style = "bold #f59e0b"
+        fill_style = "bold #d4d4d8"
     else:
-        fill_style = "bold #38bdf8"
+        fill_style = "bold #e4e4e7"
 
     t = Text()
     t.append("[", style="#555555")
@@ -240,7 +240,7 @@ class UsageModal(ModalScreen[None]):
                         win_text.append("\n" + "─" * 60 + "\n\n", style="#262626")
                     first_group = False
 
-                    win_text.append(f"● {grp_name}\n", style="bold #38bdf8")
+                    win_text.append(f"● {grp_name}\n", style="bold #e4e4e7")
                     models_info = buckets[0].models_covered if buckets else ""
                     if models_info:
                         win_text.append(f"  {models_info}\n", style="dim #888888")
@@ -258,9 +258,9 @@ class UsageModal(ModalScreen[None]):
                         if b.cooldown_display:
                             win_text.append("  ⏱ Cooldown: ", style="bold #cccccc")
                             if "ready" in b.cooldown_display.lower() or "refresh" in b.cooldown_display.lower():
-                                win_text.append(f"{b.cooldown_display}  ", style="bold #10b981")
+                                win_text.append(f"{b.cooldown_display}  ", style="bold #e4e4e7")
                             else:
-                                win_text.append(f"Resets in {b.cooldown_display}  ", style="bold #f59e0b")
+                                win_text.append(f"Resets in {b.cooldown_display}  ", style="bold #d4d4d8")
 
                             if b.reset_time:
                                 win_text.append(f"(Refreshes {b.reset_time})\n", style="dim #888888")
@@ -294,7 +294,7 @@ class UsageModal(ModalScreen[None]):
             rl = snap.rate_limits
 
             if quota.plan_name:
-                api_text.append(f"Plan / Key: {quota.plan_name}  ", style="bold #38bdf8")
+                api_text.append(f"Plan / Key: {quota.plan_name}  ", style="bold #e4e4e7")
             if quota.status_msg:
                 api_text.append(f"({quota.status_msg})\n", style="dim #777777")
             else:
@@ -305,7 +305,7 @@ class UsageModal(ModalScreen[None]):
                 rem = quota.credits_remaining if quota.credits_remaining is not None else 0.0
                 lim = quota.credits_limit if quota.credits_limit is not None else 0.0
                 used = quota.credits_used if quota.credits_used is not None else 0.0
-                api_text.append(f"  ${rem:.2f} remaining ", style="bold #10b981" if rem > 5 else "bold #f59e0b")
+                api_text.append(f"  ${rem:.2f} remaining ", style="bold #e4e4e7" if rem > 5 else "bold #d4d4d8")
                 api_text.append(f"of ${lim:.2f} limit (Consumed: ${used:.2f})\n", style="#888888")
 
             api_text.append("\nLive API Headers (RPM / TPM):\n", style="bold #cccccc")

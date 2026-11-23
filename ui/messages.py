@@ -130,7 +130,7 @@ class CompactionCheckpointMessage(ChatMessage):
             subtitle=sub_text,
             title_align="left",
             subtitle_align="right",
-            border_style="#0284c7",
+            border_style="#3f3f46",
             box=box.ROUNDED,
             padding=(0, 1),
         )
@@ -265,16 +265,16 @@ class ToolBundleWidget(Vertical):
     def _render_title(self) -> Text:
         running_count = sum(1 for c in self.msg.calls if c.running)
         t = Text()
-        t.append("› ", style="bold #3b82f6")
+        t.append("› ", style="bold #71717a")
         if len(self.msg.calls) == 1:
             t.append(f"operation · {self.msg.calls[0].device}", style="bold #cccccc")
         else:
             t.append(f"operations · {len(self.msg.calls)} commands", style="bold #cccccc")
         if running_count > 0:
-            t.append(f" ({running_count} running)", style="bold #f59e0b")
+            t.append(f" ({running_count} running)", style="bold #d4d4d8")
         else:
             all_ok = all(c.ok for c in self.msg.calls)
-            t.append(" ✓ completed", style="dim #10b981" if all_ok else "bold #ef4444")
+            t.append(" ✓ completed", style="dim #a1a1aa" if all_ok else "bold #f87171")
         return t
 
     def _render_compact(self) -> Text:
@@ -294,11 +294,11 @@ class ToolBundleWidget(Vertical):
                 first_row = False
 
                 if c.running:
-                    t.append("● ", style="bold #f59e0b")
+                    t.append("● ", style="bold #d4d4d8")
                 elif c.ok:
-                    t.append("✓ ", style="#10b981")
+                    t.append("✓ ", style="#a1a1aa")
                 else:
-                    t.append("✗ ", style="bold #ef4444")
+                    t.append("✗ ", style="bold #f87171")
                 t.append(f"$ {cmd_text}", style="white")
                 t.append(f" ({c.device})", style="dim")
                 if not c.running and j == len(cmd_lines) - 1:
@@ -327,11 +327,11 @@ class ToolBundleWidget(Vertical):
                     hdr.append(f"  ({c.device})", style="dim")
                     hdr.append(f"  [{c.risk.value}]", style="#555555")
                     if c.running:
-                        hdr.append("  ● executing...", style="bold #f59e0b")
+                        hdr.append("  ● executing...", style="bold #d4d4d8")
                     else:
                         lines = len(c.output.splitlines()) if c.output else 0
                         status_text = f"✓ done ({lines} lines)" if c.ok else "✗ failed"
-                        hdr.append(f"  {status_text}", style="#10b981" if c.ok else "bold #ef4444")
+                        hdr.append(f"  {status_text}", style="#a1a1aa" if c.ok else "bold #f87171")
             elements.append(hdr)
 
             if c.output is not None:
@@ -406,7 +406,7 @@ class ToolBundleMessage(ChatMessage):
                     else:
                         line_count = len(c.output.splitlines()) if c.output is not None else 0
                         status_text = f"✓ done ({line_count} line{'s' if line_count != 1 else ''})" if c.ok else "✗ failed"
-                        header.append(f"  {status_text}", style="dim" if c.ok else "bold red")
+                        header.append(f"  {status_text}", style="dim" if c.ok else "bold #f87171")
 
             elements.append(header)
 
