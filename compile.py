@@ -57,15 +57,30 @@ def clean_artifacts(base_dir: Path) -> None:
         p = base_dir / name
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
+    build_dir = base_dir / "build"
+    for item in ["lib", "bdist.linux-x86_64", "bdist.win-amd64"]:
+        p = build_dir / item
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
     pyapp_dir = base_dir / "build" / "pyapp"
     if pyapp_dir.exists():
         shutil.rmtree(pyapp_dir, ignore_errors=True)
-    print("      Cleaned dist, egg-info, and build/pyapp directories.")
+    print("      Cleaned dist, build/lib, egg-info, and build/pyapp directories.")
 
 
 def build_wheel(base_dir: Path) -> Path:
     print("      Building project wheel via pyproject.toml...")
     dist_dir = base_dir / "dist"
+    lib_dir = base_dir / "build" / "lib"
+    egg_info = base_dir / "rackhand.egg-info"
+
+    # Always clear stale build artifacts before compiling wheel
+    if dist_dir.exists():
+        shutil.rmtree(dist_dir, ignore_errors=True)
+    if lib_dir.exists():
+        shutil.rmtree(lib_dir, ignore_errors=True)
+    if egg_info.exists():
+        shutil.rmtree(egg_info, ignore_errors=True)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(dist_dir)]
@@ -146,15 +161,85 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
             build_rs.write_text(build_content, encoding="utf-8")
             print("      ✓ Injected Windows icon embedding hook into build.rs.")
 
+    # Patch distribution.rs to auto-update cache when embedded project changes
+    dist_rs = pyapp_dir / "src" / "distribution.rs"
+    dist_content = dist_rs.read_text(encoding="utf-8")
+    if ".project_hash" not in dist_content:
+        target = """    if !app::install_dir().is_dir() {
+        materialize()?;
+
+        if !app::skip_install() {
+            install_project()?;
+        }
+    }"""
+        replacement = """    let embedded = app::embedded_project();
+    let hash_file = app::install_dir().join(".project_hash");
+    let mut needs_install = false;
+
+    if !app::install_dir().is_dir() {
+        materialize()?;
+        needs_install = true;
+    } else if !embedded.is_empty() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        embedded.hash(&mut hasher);
+        let current_hash = format!("{:016x}", hasher.finish());
+        let installed_hash = fs::read_to_string(&hash_file).unwrap_or_default();
+        if current_hash != installed_hash {
+            if fs::remove_dir_all(app::install_dir()).is_ok() {
+                materialize()?;
+            }
+            needs_install = true;
+        }
+    }
+
+    if needs_install && !app::skip_install() {
+        install_project()?;
+        if !embedded.is_empty() {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            embedded.hash(&mut hasher);
+            let current_hash = format!("{:016x}", hasher.finish());
+            let _ = fs::write(&hash_file, current_hash);
+        }
+    }"""
+        if target in dist_content:
+            dist_content = dist_content.replace(target, replacement, 1)
+            dist_rs.write_text(dist_content, encoding="utf-8")
+            print("      ✓ Injected embedded project cache auto-invalidation into distribution.rs.")
+
 
 def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output_exe: Path) -> None:
+    # Ensure embedded project file in PyApp source tree is updated with the new wheel
+    embed_target = pyapp_dir / "src" / "embed" / "project"
+    embed_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(wheel_path, embed_target)
+
+    # Touch main.rs to ensure Cargo recompiles the binary with the updated embedded asset
+    main_rs = pyapp_dir / "src" / "main.rs"
+    if main_rs.exists():
+        main_rs.touch()
+
+    # Parse version from pyproject.toml
+    base_dir = pyapp_dir.parent.parent
+    pyproject_toml = base_dir / "pyproject.toml"
+    project_version = "0.1.0"
+    if pyproject_toml.exists():
+        import re
+        m = re.search(r'version\s*=\s*"([^"]+)"', pyproject_toml.read_text(encoding="utf-8"))
+        if m:
+            project_version = m.group(1)
+
     env = os.environ.copy()
     env["PYAPP_PROJECT_NAME"] = "rackhand"
-    env["PYAPP_PROJECT_VERSION"] = "0.1.0"
+    env["PYAPP_PROJECT_VERSION"] = project_version
     env["PYAPP_PROJECT_PATH"] = str(wheel_path)
     env["PYAPP_EXEC_MODULE"] = "app"
     env["PYAPP_PYTHON_VERSION"] = "3.12"
     env["PYAPP_UV_ENABLED"] = "1"
+    env["PYAPP_PIP_EXTRA_ARGS"] = "--force-reinstall"
     
     if embed_runtime:
         env["PYAPP_DISTRIBUTION_EMBED"] = "1"
