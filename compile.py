@@ -53,19 +53,39 @@ def check_prerequisites() -> tuple[str, str]:
 
 
 def clean_artifacts(base_dir: Path) -> None:
-    for name in ["dist", "rackhand.egg-info"]:
+    # 1. Clean local project build artifacts
+    for name in ["dist", "build", "rackhand.egg-info", ".pytest_cache"]:
         p = base_dir / name
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
-    build_dir = base_dir / "build"
-    for item in ["lib", "bdist.linux-x86_64", "bdist.win-amd64"]:
-        p = build_dir / item
-        if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
-    pyapp_dir = base_dir / "build" / "pyapp"
-    if pyapp_dir.exists():
-        shutil.rmtree(pyapp_dir, ignore_errors=True)
-    print("      Cleaned dist, build/lib, egg-info, and build/pyapp directories.")
+
+    exe_file = base_dir / "rackhand.exe"
+    if exe_file.exists():
+        exe_file.unlink(missing_ok=True)
+
+    for pycache in base_dir.rglob("__pycache__"):
+        if pycache.is_dir():
+            shutil.rmtree(pycache, ignore_errors=True)
+
+    # 2. Clean PyApp target installation caches
+    cache_dirs: list[Path] = []
+    if sys.platform == "win32" and "LOCALAPPDATA" in os.environ:
+        local_app_data = Path(os.environ["LOCALAPPDATA"])
+        cache_dirs.extend([
+            local_app_data / "rackhand",
+            local_app_data / "pyapp" / "rackhand",
+        ])
+    else:
+        cache_dirs.extend([
+            Path.home() / ".local" / "share" / "rackhand",
+            Path.home() / ".local" / "share" / "pyapp" / "rackhand",
+        ])
+
+    for c in cache_dirs:
+        if c.exists():
+            shutil.rmtree(c, ignore_errors=True)
+
+    print("      ✓ Cleaned dist, build, egg-info, __pycache__, and PyApp target caches.")
 
 
 def build_wheel(base_dir: Path) -> Path:
