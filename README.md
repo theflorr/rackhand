@@ -4,6 +4,8 @@
 
 Tired of copy-pasting show commands back and forth between ChatGPT and PuTTY? Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It audits switch and router configs, troubleshoots VLANs and routing protocols, and stages exact remediation commands with human approval before touching your hardware.
 
+![Rackhand Terminal UI](screenshot.jpg)
+
 ---
 
 ### Download
@@ -20,6 +22,8 @@ No Python installation or dependencies required: just download `rackhand.exe` an
 * **Network Baseline Knowledge**: Pre-loaded with operational playbooks for Cisco (IOS, IOS-XE, IOS-XR, NX-OS, ASA) and Fortinet (FortiOS, FortiSwitch, FortiAP).
 * **Multi-Provider AI**: Supports Anthropic Claude, OpenAI, Google Antigravity / Gemini, DeepSeek, OpenRouter, or local Ollama instances.
 * **Clean Dark TUI**: Built on Textual with split live console streaming, agent chat, and side-by-side session management.
+
+![Rackhand Autonomous Agent in Action](screenshot-agent.jpg)
 
 ---
 
