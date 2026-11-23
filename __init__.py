@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend import Backend, DemoBackend
+from backend import Backend, RealBackend
 from models import (
     ApprovalDecision,
     ChatSession,
@@ -17,7 +17,7 @@ from app import RackhandApp
 
 __all__ = [
     "Backend",
-    "DemoBackend",
+    "RealBackend",
     "RackhandApp",
     "DeviceProfile",
     "DeviceSession",

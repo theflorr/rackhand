@@ -8,13 +8,12 @@ Usage:
 """
 from __future__ import annotations
 
-import argparse
 from typing import Optional
 
 from textual.app import App
 from textual.binding import Binding
 
-from backend import Backend, DemoBackend, RealBackend
+from backend import Backend, RealBackend
 from models import DeviceSession, ProviderConfig, Settings
 from ui import APP_CSS, WorkspaceScreen, _rackhand_theme
 
@@ -62,7 +61,7 @@ class RackhandApp(App):
             # Prioritize verified active providers (Antigravity with AGY CLI, OpenRouter, etc.)
             for preferred_key in ["antigravity", "openrouter", "deepseek", "anthropic", "openai", "gemini"]:
                 cfg = configs.get(preferred_key)
-                if cfg and cfg.api_key and not str(cfg.api_key).startswith("mock"):
+                if cfg and cfg.api_key:
                     self.provider = cfg
                     break
             if not self.provider and configs:
@@ -88,11 +87,7 @@ class RackhandApp(App):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Rackhand - Agentic network configuration CLI")
-    parser.add_argument("--demo", action="store_true", default=False, help="Run with Demo simulated backend")
-    args = parser.parse_args()
-
-    backend = DemoBackend() if args.demo else RealBackend()
+    backend = RealBackend()
     app = RackhandApp(backend=backend)
     app.run()
 
