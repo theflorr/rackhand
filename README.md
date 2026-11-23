@@ -23,6 +23,8 @@ No Python installation or dependencies required: download `rackhand.exe` and run
 * **Multi-Provider AI**: Supports Anthropic Claude, OpenAI, Google Antigravity / Gemini, DeepSeek, OpenRouter, or local Ollama instances.
 * **Clean Dark TUI**: Built on Textual with split live console streaming, agent chat, and side-by-side session management.
 
+![Rackhand Multi-Session Interface and OS Detection](screenshot-agent.jpg)
+
 ---
 
 ### Running from source
