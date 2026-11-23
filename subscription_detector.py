@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from models import ApiScheme, AuthStyle, ProviderConfig
+from models import ApiScheme, AuthStyle, ProviderConfig, ensure_agy_in_path, find_agy_executable
 
 
 @dataclass
@@ -127,16 +127,7 @@ def _read_json_safe(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _find_agy_executable() -> Optional[str]:
-    import shutil
-    found = shutil.which("agy") or shutil.which("antigravity")
-    if found:
-        return found
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if local_app_data:
-        candidate = Path(local_app_data) / "agy" / "bin" / "agy.exe"
-        if candidate.is_file():
-            return str(candidate)
-    return None
+    return find_agy_executable()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

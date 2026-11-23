@@ -26,7 +26,7 @@ from typing import Any, Optional
 import httpx
 from rich.text import Text
 
-from models import ApiScheme, ChatSession, ProviderConfig
+from models import ApiScheme, ChatSession, ProviderConfig, ensure_agy_in_path, find_agy_executable
 
 logger = logging.getLogger("rackhand.usage")
 
@@ -255,22 +255,7 @@ def parse_cooldown(reset_time_val: Any, now_ts: Optional[float] = None) -> tuple
 
 def _find_agy_executable() -> Optional[str]:
     """Locate the agy CLI binary on Linux, macOS, or Windows."""
-    found = shutil.which("agy") or shutil.which("antigravity")
-    if found:
-        return found
-    candidates = [
-        Path.home() / ".gemini" / "antigravity-cli" / "bin" / "agy",
-        Path.home() / ".gemini" / "antigravity-cli" / "bin" / "agy.exe",
-        Path.home() / ".local" / "bin" / "agy",
-    ]
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if local_app_data:
-        candidates.append(Path(local_app_data) / "Programs" / "antigravity-cli" / "bin" / "agy.exe")
-        candidates.append(Path(local_app_data) / "agy" / "bin" / "agy.exe")
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    return None
+    return find_agy_executable()
 
 
 class UsageTracker:

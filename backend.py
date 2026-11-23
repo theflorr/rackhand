@@ -58,8 +58,10 @@ from models import (
     Transport,
     Vendor,
     detect_vendor_from_text,
+    ensure_agy_in_path,
     extract_hostname,
     extract_prompt,
+    find_agy_executable,
 )
 
 class Backend(ABC):
@@ -513,6 +515,7 @@ class RealBackend(Backend):
         self._settings_file = self._dir / "settings.json"
         self._providers_file = self._dir / "providers.json"
         self._dir.mkdir(parents=True, exist_ok=True)
+        ensure_agy_in_path()
 
         self._active_sessions: dict[str, DeviceSession] = {}
         self._serial_drivers: dict[str, RealSerialSession] = {}
@@ -896,8 +899,11 @@ class RealBackend(Backend):
     async def test_provider(self, cfg: ProviderConfig) -> TestResult:
         if cfg.scheme == ApiScheme.ANTIGRAVITY or cfg.spec_id == "antigravity" or cfg.base_url == "local:agy" or "antigravity" in cfg.name.lower():
             start_t = time.time()
+            agy_bin = ensure_agy_in_path(getattr(cfg, "api_key", None))
+            if not agy_bin:
+                return TestResult(False, "AGY CLI executable ('agy') not found on system PATH or install directories", 0, False)
             try:
-                cmd = ["agy", "--effort", "low", "--output-format", "json", "-p", "Reply with OK"]
+                cmd = [agy_bin, "--effort", "low", "--output-format", "json", "-p", "Reply with OK"]
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -981,23 +987,25 @@ class RealBackend(Backend):
                 cfg = ProviderConfig(key=cfg, spec_id=cfg, base_url="", auth=AuthStyle.BEARER)
 
         if cfg.scheme == ApiScheme.ANTIGRAVITY or cfg.spec_id == "antigravity" or cfg.base_url == "local:agy" or "antigravity" in cfg.name.lower():
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "agy", "models",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                if proc.returncode == 0:
-                    models = []
-                    for line in stdout.decode("utf-8", errors="replace").splitlines():
-                        parts = line.strip().split("\t")
-                        if parts and parts[0] and not parts[0].startswith("Fetching"):
-                            models.append(parts[0])
-                    if models:
-                        return models
-            except Exception:
-                pass
+            agy_bin = ensure_agy_in_path(getattr(cfg, "api_key", None))
+            if agy_bin:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        agy_bin, "models",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                    if proc.returncode == 0:
+                        models = []
+                        for line in stdout.decode("utf-8", errors="replace").splitlines():
+                            parts = line.strip().split("\t")
+                            if parts and parts[0] and not parts[0].startswith("Fetching"):
+                                models.append(parts[0])
+                        if models:
+                            return models
+                except Exception:
+                    pass
             return ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]
 
         if cfg.base_url and (cfg.api_key or "localhost" in cfg.base_url or "127.0.0.1" in cfg.base_url):

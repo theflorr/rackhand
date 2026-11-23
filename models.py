@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import os
+from pathlib import Path
 import re
+import shutil
 from typing import Optional, Union
 
 # =============================================================================
@@ -838,4 +841,89 @@ class ProviderConfig:
             supports_tools=d.get("supports_tools", True),
             supports_streaming=d.get("supports_streaming", True),
         )
+
+
+def find_agy_executable(hint: Optional[str] = None) -> Optional[str]:
+    """Locate the agy CLI binary across system PATH and known installation locations."""
+    if hint:
+        try:
+            hint_path = Path(hint).expanduser()
+            if hint_path.is_file():
+                return str(hint_path)
+        except Exception:
+            pass
+        found = shutil.which(hint)
+        if found:
+            return found
+
+    # Check PATH first
+    for name in ("agy", "agy.exe", "antigravity", "antigravity.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    # Standard candidate directories across Windows, macOS, Linux
+    candidates: list[Path] = []
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        candidates.extend([
+            Path(local_app_data) / "agy" / "bin" / "agy.exe",
+            Path(local_app_data) / "agy" / "bin" / "agy",
+            Path(local_app_data) / "Programs" / "antigravity-cli" / "bin" / "agy.exe",
+            Path(local_app_data) / "Programs" / "agy" / "bin" / "agy.exe",
+        ])
+
+    try:
+        user_home = Path.home()
+        candidates.extend([
+            user_home / ".gemini" / "antigravity-cli" / "bin" / "agy.exe",
+            user_home / ".gemini" / "antigravity-cli" / "bin" / "agy",
+            user_home / ".local" / "bin" / "agy.exe",
+            user_home / ".local" / "bin" / "agy",
+            user_home / "AppData" / "Local" / "agy" / "bin" / "agy.exe",
+            user_home / "AppData" / "Local" / "Programs" / "antigravity-cli" / "bin" / "agy.exe",
+        ])
+    except Exception:
+        pass
+
+    prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+    if prog_files:
+        candidates.extend([
+            Path(prog_files) / "agy" / "bin" / "agy.exe",
+            Path(prog_files) / "Antigravity" / "bin" / "agy.exe",
+        ])
+
+    prog_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+    if prog_files_x86:
+        candidates.extend([
+            Path(prog_files_x86) / "agy" / "bin" / "agy.exe",
+        ])
+
+    candidates.extend([
+        Path("/usr/local/bin/agy"),
+        Path("/usr/bin/agy"),
+        Path("/opt/homebrew/bin/agy"),
+    ])
+
+    for c in candidates:
+        try:
+            if c.is_file():
+                return str(c)
+        except Exception:
+            pass
+
+    return None
+
+
+def ensure_agy_in_path(hint: Optional[str] = None) -> Optional[str]:
+    """Locate the agy CLI binary and prepend its directory to PATH if not already present."""
+    bin_path = find_agy_executable(hint)
+    if bin_path:
+        bin_dir = str(Path(bin_path).parent)
+        current_path = os.environ.get("PATH", "")
+        if bin_dir.lower() not in current_path.lower():
+            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{current_path}"
+    return bin_path
+
 

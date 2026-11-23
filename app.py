@@ -14,7 +14,7 @@ from textual.app import App
 from textual.binding import Binding
 
 from backend import Backend, RealBackend
-from models import DeviceSession, ProviderConfig, Settings
+from models import DeviceSession, ProviderConfig, Settings, ensure_agy_in_path
 from ui import APP_CSS, WorkspaceScreen, _rackhand_theme
 
 
@@ -48,6 +48,7 @@ class RackhandApp(App):
             pass
 
     async def on_mount(self) -> None:
+        ensure_agy_in_path()
         self.settings = await self.backend.load_settings()
         
         # Auto-detect and load local subscriptions (Claude, Antigravity, OpenCode, Copilot, etc.)

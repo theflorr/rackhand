@@ -19,7 +19,7 @@ import httpx
 from models import (
     AgentDone, AgentError, AgentEvent, AgentProposal, AgentText, AgentToolCall,
     AgentToolResult, ApiScheme, ApprovalDecision, DeviceSession, ProposedChange,
-    ProviderConfig, Risk, Settings,
+    ProviderConfig, Risk, Settings, ensure_agy_in_path, find_agy_executable,
 )
 
 logger = logging.getLogger("rackhand.llm_engine")
@@ -589,8 +589,17 @@ class RealLLMEngine:
         elif effort == "max":
             effort = "xhigh"
 
+        agy_bin = ensure_agy_in_path(getattr(provider, "api_key", None))
+        if not agy_bin:
+            yield AgentError(
+                f"{badge} Antigravity CLI ('agy') not found on system PATH or standard install directories. "
+                f"Please ensure AGY CLI is installed and accessible."
+            )
+            yield AgentDone(total_prompt_tokens, total_completion_tokens)
+            return
+
         for step in range(max_steps):
-            cmd = ["agy", "--output-format", "json", "--effort", effort, "--model", model]
+            cmd = [agy_bin, "--output-format", "json", "--effort", effort, "--model", model]
             if cid:
                 cmd.extend(["--conversation", cid])
             cmd.extend(["-p", current_prompt])
@@ -913,9 +922,13 @@ class RealLLMEngine:
     ) -> Optional[str]:
         """Execute a single-turn stateless completion for background tasks (titling, review, compaction)."""
         if provider.scheme == ApiScheme.ANTIGRAVITY or provider.spec_id == "antigravity" or provider.base_url == "local:agy" or "antigravity" in provider.name.lower():
+            agy_bin = ensure_agy_in_path(getattr(provider, "api_key", None))
+            if not agy_bin:
+                logger.error("AGY call_llm_stateless: agy executable not found")
+                return None
             model = provider.model or "gemini-3.8-flash-low"
             full_prompt = f"{system_prompt}\n\n{user_prompt}"
-            cmd = ["agy", "--output-format", "json", "--effort", "low", "--model", model, "-p", full_prompt]
+            cmd = [agy_bin, "--output-format", "json", "--effort", "low", "--model", model, "-p", full_prompt]
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
