@@ -700,12 +700,13 @@ Label { color: #666666; }
 /* ── workspace ───────────────────────────────────────────────────────────── */
 #ws-body { width: 100%; height: 100%; }
 
-/* sidebar - flush left, no extra margin */
+/* sidebar - 1 row down from top */
 #sidebar {
     width: 27;
     height: 100%;
     background: #0c0c0f;
     padding: 0 1;
+    margin-top: 1;
 }
 
 /* draggable divider between sidebar and main */
@@ -715,6 +716,7 @@ Label { color: #666666; }
     background: #0a0a0a;
     color: #2a2a2a;
     content-align: center middle;
+    margin-top: 1;
 }
 #sidebar-divider:hover,
 #sidebar-divider.dragging {
@@ -723,7 +725,7 @@ Label { color: #666666; }
 }
 #sidebar-banner {
     height: auto;
-    margin: 1 0 1 0;
+    margin: 0 0 1 0;
     padding: 0 0 1 0;
     border-bottom: solid #1c1c24;
 }
