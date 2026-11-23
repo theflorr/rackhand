@@ -946,6 +946,7 @@ CommandSuggestionsBox, #composer-suggestions {
     border: round #262626;
     padding: 0 1;
     margin-bottom: 1;
+    overflow-x: hidden;
     display: none;
 }
 CommandSuggestionsBox.-visible, #composer-suggestions.-visible {

@@ -137,3 +137,30 @@ def test_refresh_device_list_visual_elements():
         assert "serial" in str(second_opt.prompt).lower()
     finally:
         active_app.reset(token)
+
+
+def test_command_suggestions_box_no_wrapping():
+    from unittest.mock import PropertyMock, patch
+    from textual.geometry import Size
+    from ui.suggestions import CommandSuggestionsBox, CommandSuggestion
+    from rich.console import Console
+
+    box = CommandSuggestionsBox()
+    long_desc = "Enter plan mode (device discovery, read-only inspection, task planning) with very long text that would otherwise wrap around"
+    box.suggestions = [
+        CommandSuggestion("/plan", "/plan", long_desc),
+        CommandSuggestion("/compact", "/compact", "Short summary"),
+    ]
+    with patch.object(CommandSuggestionsBox, "size", new_callable=PropertyMock, return_value=Size(60, 10)):
+        group = box.render()
+
+    c = Console(width=60)
+    with c.capture() as cap:
+        c.print(group)
+    rendered = cap.get()
+    non_empty_lines = [l for l in rendered.splitlines() if l.strip()]
+    # Header + 2 items + footer = exactly 4 lines (no wrapping across lines)
+    assert len(non_empty_lines) == 4
+    # Ensure ellipsis is used to clip the long description
+    assert "…" in non_empty_lines[1]
+

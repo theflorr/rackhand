@@ -126,6 +126,7 @@ class CommandSuggestionsBox(Widget):
         border: round #262626;
         padding: 0 1;
         margin-bottom: 1;
+        overflow-x: hidden;
         display: none;
     }
     CommandSuggestionsBox.-visible {
@@ -205,7 +206,7 @@ class CommandSuggestionsBox(Widget):
         title_text = cat_labels.get(cat, cat)
 
         # Header: clean, lowercase, dim text matching .section in Rackhand
-        hdr = Text()
+        hdr = Text(no_wrap=True, overflow="ellipsis")
         hdr.append(title_text, style="bold #777777")
         hdr.append(f"  {self.selected_index + 1}/{len(self.suggestions)}", style="dim #444444")
         lines.append(hdr)
@@ -217,23 +218,38 @@ class CommandSuggestionsBox(Widget):
             start_idx = max(0, min(self.selected_index - max_visible // 2, total - max_visible))
         visible_items = self.suggestions[start_idx : start_idx + max_visible]
 
+        box_width = self.size.width if self.size and self.size.width > 0 else 80
+        avail_width = max(20, box_width - 4)
+        col_w = 26
+        prefix_len = 2
+        sep_len = 2
+        desc_max_len = max(5, avail_width - (prefix_len + col_w + sep_len))
+
         for i, item in enumerate(visible_items):
             actual_idx = start_idx + i
             is_sel = (actual_idx == self.selected_index)
-            row = Text()
+            row = Text(no_wrap=True, overflow="ellipsis")
             bg = " on #1c1c1c" if is_sel else ""
+
+            desc = item.description or ""
+            if len(desc) > desc_max_len:
+                desc = desc[:max(0, desc_max_len - 1)] + "…"
+
+            display_str = item.display
+            if len(display_str) > col_w:
+                display_str = display_str[:col_w - 1] + "…"
 
             if is_sel:
                 row.append("› ", style=f"bold white{bg}")
-                row.append(f"{item.display:<26}", style=f"bold white{bg}")
-                row.append(f"  {item.description}", style=f"#999999{bg}")
+                row.append(f"{display_str:<{col_w}}", style=f"bold white{bg}")
+                row.append(f"  {desc}", style=f"#999999{bg}")
             else:
                 row.append("  ", style="default")
-                row.append(f"{item.display:<26}", style="#bbbbbb")
-                row.append(f"  {item.description}", style="dim #555555")
+                row.append(f"{display_str:<{col_w}}", style="#bbbbbb")
+                row.append(f"  {desc}", style="dim #555555")
             lines.append(row)
 
-        footer = Text()
+        footer = Text(no_wrap=True, overflow="ellipsis")
         footer.append("Tab", style="bold #888888")
         footer.append(" complete  ", style="dim #444444")
         footer.append("↑↓", style="bold #888888")
