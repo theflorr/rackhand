@@ -4,7 +4,7 @@
 
 Rackhand connects LLM agents directly to the device, so you don't have to relay output and commands by hand. Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It edits switch and router configs, troubleshoots VLANs and routing protocols, and plans out the exact commands with human approval before touching your hardware.
 
-![Rackhand](screenshot.jpg)
+![Rackhand](screenshot.png)
 
 ---
 
