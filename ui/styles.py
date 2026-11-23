@@ -405,14 +405,14 @@ Label { color: #666666; }
 
 /* ── workspace settings tab & modal ─────────────────────────────────────────── */
 #tab-settings {
-    height: 100%;
+    height: 1fr;
     padding: 1 3;
     background: #0a0a0a;
 }
 
 #tab-settings-scroll {
     max-width: 96;
-    height: 100%;
+    height: 1fr;
     padding-bottom: 2;
 }
 
@@ -753,6 +753,17 @@ Label { color: #666666; }
 
 TabbedContent {
     background: #0a0a0a;
+    height: 100%;
+}
+
+TabbedContent ContentSwitcher, #main ContentSwitcher {
+    height: 1fr;
+    width: 100%;
+}
+
+TabbedContent TabPane {
+    height: 1fr;
+    width: 100%;
 }
 
 #chat { height: 1fr; padding: 0 1; background: #0a0a0a; }
@@ -937,7 +948,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 /* ── console tab & remade header ────────────────────────────────────────── */
 #tab-console {
     padding: 0;
-    height: 100%;
+    height: 1fr;
 }
 
 #console-header {
