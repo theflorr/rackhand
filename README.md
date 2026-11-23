@@ -29,30 +29,30 @@ No Python installation or dependencies required: download `rackhand.exe` and run
 
 ### Safety & Approvals
 
-* **Staged Changes**: Read-only diagnostics run autonomously. Config changes pause for your review, edit, or approval.
-* **Pre-Flight Backups**: Automatically snapshots `running-config` to local disk before applying changes.
-* **Secret Redaction**: Passwords, PSKs, and SNMP strings are masked (`[REDACTED]`) in-flight before hitting the LLM.
-* **Risk Gatekeeper**: Flags destructive commands (`reload`, `write erase`, interface wipes) before execution.
+* **You approve all changes**: The agent runs `show` and `get` commands on its own, but stops and asks you before editing configs.
+* **Automatic backups**: Pulls a copy of `running-config` to your disk before touching anything.
+* **Hides passwords**: Masks passwords, PSKs, and SNMP strings (`[REDACTED]`) before sending text to the AI.
+* **Blocks dangerous commands**: Catches things like `reload` or `write erase` before they can break your gear.
 
 ---
 
 ### Specialist Agents
 
-Pre-loaded with platform syntax, pagination handling, and commit mechanics:
+Knows the right syntax, quirks, and save commands for each platform:
 
 * **Cisco**: IOS, IOS-XE, NX-OS (vPC / VXLAN), ASA (`packet-tracer`), FTD.
-* **Fortinet**: FortiOS (firewall policies, SD-WAN, VDOMs), FortiSwitch, FortiAP, FortiManager.
-* **Auto-Detect**: Reads device banner on connect to pick the right specialist automatically.
+* **Fortinet**: FortiOS (firewall rules, SD-WAN, VDOMs), FortiSwitch, FortiAP, FortiManager.
+* **Auto-Detect**: Reads the device banner on connect and picks the right agent automatically.
 
 ---
 
 ### Modes & Commands
 
-* **`/plan`**: Read-only mode. Explores topology and drafts a 4-phase rollout & rollback plan.
-* **`/build`**: Execution mode. Stages commands and verifies live hardware state.
-* **`/compact`**: Compresses conversation into a checkpoint to free token context.
-* **`/fork`**: Clones active state into a new tab to test alternate configs safely.
-* **`/effort`**: Sets reasoning effort (`low`, `medium`, `high`) on thinking models.
+* **`/plan`**: Read-only mode. Asks questions, checks the setup, and writes a step-by-step plan with rollback steps.
+* **`/build`**: Normal mode. Runs commands and applies changes with your approval.
+* **`/compact`**: Summarizes the chat so you don't run out of memory on long sessions.
+* **`/fork`**: Copies your current session to a new tab so you can test another idea.
+* **`/effort`**: Changes how hard thinking models think (`low`, `medium`, `high`).
 
 ---
 
