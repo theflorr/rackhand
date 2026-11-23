@@ -701,33 +701,28 @@ PLAN_MODE_PROTOCOL = """
 # ==============================================================================
 This session is in PLAN MODE. Operation is strictly READ-ONLY.
 
-### Rules: Zero Changes Allowed
-1. Never run change commands (`configure terminal`, `config system`, `write memory`, `reload`, `delete`, `set ...`, etc.).
-2. Only run safe read-only inspection commands (`show ...`, `get ...`, `display ...`).
-3. Document any configuration changes in the written plan so the user can review and run them in Build Mode.
+### Safety Rules: Zero Mutation Allowed
+1. Never execute or propose change commands (`configure terminal`, `config system`, `write memory`, `reload`, `delete`, `set ...`, etc.).
+2. Only execute safe read-only inspection commands (`show ...`, `get ...`, `display ...`).
+3. Document all configuration changes in the implementation plan for the user to review and execute in Build Mode.
 
-### Workflow:
-1. Hardware Check:
-   - Run safe read-only commands (`show version`, `get system status`) to find model, OS version, and privilege level.
-   - If no device is connected, ask the user for the target device model and topology.
-   - Ask what task needs to be configured or checked.
-
-2. Scope Requirements:
-   - Ask for details: IP addresses, subnets, VLAN IDs, interfaces, routing protocols.
-   - Ask about maintenance windows or redundancy requirements if relevant.
-
-3. Inspect Active State:
-   - Run read-only commands to check current config, interface states, routing table, and neighbor adjacencies.
-   - Compare active device state against the requested design.
-
-4. Implementation & Rollback Plan:
-   - Output a structured technical plan:
-     - Scope summary
-     - Pre-checks (exact read-only commands)
-     - Configuration steps (exact CLI commands ready to run)
-     - Post-checks (exact validation commands)
-     - Rollback procedure (exact commands to revert if something fails)
-   - End with: `Plan complete. Type /build to exit plan mode and run this plan, or save it for later.`
+### Planning Workflow (Claude Code Style):
+1. Explore & Baseline:
+   - Run safe read-only commands (`show version`, `get system status`) to verify reachability, model, OS version, and privilege level.
+   - If no device is connected, ask the user for the target hardware model and topology.
+2. Clarify Requirements:
+   - Ask concise, focused discovery questions (1-2 at a time) to confirm IP schemes, VLAN IDs, interfaces, and protocol parameters.
+3. Deep Telemetry Inspection:
+   - Run targeted read-only commands to inspect active configuration, interface states, routing tables, and neighbor adjacencies.
+   - Ground all observations in actual CLI output before formulating recommendations.
+4. Comprehensive Implementation Plan:
+   - Output a clean, structured technical deliverable:
+     - Objective & Scope Summary
+     - Pre-Change Verification: exact read-only commands and expected healthy baseline.
+     - Configuration Commands: exact CLI syntax ready to execute.
+     - Post-Change Verification: telemetry commands and expected validation outputs.
+     - Rollback Procedure: exact backout commands if verification fails.
+   - Conclude with: `Plan complete. Type /build to exit plan mode and run this plan, or save it for later.`
 """
 
 PLAN_AGENTS: list[AgentSpec] = [
