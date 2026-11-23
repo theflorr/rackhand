@@ -25,6 +25,25 @@ from models import (
 logger = logging.getLogger("rackhand.llm_engine")
 
 
+REDACT_PATTERNS = [
+    (re.compile(r'\b(password(?:\s+[0-9]+)?\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(secret(?:\s+[0-9]+)?\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(snmp-server\s+community\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(pre-shared-key(?:\s+(?:hex|ascii|[0-9]+))?\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(preshared-key\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(key-string\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(md5\s+key-string\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'\b(wpa-psk(?:\s+ascii)?\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'-----BEGIN[ A-Z_-]*PRIVATE KEY-----.*?-----END[ A-Z_-]*PRIVATE KEY-----', re.DOTALL), r'[REDACTED PRIVATE KEY]'),
+]
+
+
+def redact_sensitive_text(text: str) -> str:
+    for pat, repl in REDACT_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
 # ==============================================================================
 # TOOL DEFINITIONS FOR NETWORK ENGINEERING
 # ==============================================================================
@@ -370,7 +389,8 @@ class RealLLMEngine:
 
                         # Yield result to UI
                         yield AgentToolResult(sub_call_id, output, ok)
-                        outputs_for_context.append(f"$ {disp_cmd}\n{output}")
+                        ctx_output = redact_sensitive_text(output) if getattr(settings, "redact_secrets", True) else output
+                        outputs_for_context.append(f"$ {disp_cmd}\n{ctx_output}")
 
                     # Feed result back into conversation context
                     combined_output = "\n".join(outputs_for_context)
@@ -603,7 +623,8 @@ class RealLLMEngine:
                             ok = False
 
                         yield AgentToolResult(sub_call_id, output, ok)
-                        outputs_for_context.append(f"$ {disp_cmd}\n{output}")
+                        ctx_output = redact_sensitive_text(output) if getattr(settings, "redact_secrets", True) else output
+                        outputs_for_context.append(f"$ {disp_cmd}\n{ctx_output}")
 
                     combined_output = "\n".join(outputs_for_context)
                     truncated_output = ContextMemoryManager.truncate_tool_output(combined_output)

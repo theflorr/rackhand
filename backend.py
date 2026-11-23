@@ -1529,7 +1529,7 @@ class RealBackend(Backend):
                 spec_id="anthropic",
                 scheme=ApiScheme.ANTHROPIC,
                 base_url="https://api.anthropic.com",
-                api_key="mock-anthropic-key",
+                api_key="",
                 auth=AuthStyle.X_API_KEY,
                 model="claude-3-5-sonnet-20241022",
                 context_window=200000,
