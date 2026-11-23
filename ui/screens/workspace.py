@@ -1241,6 +1241,10 @@ class WorkspaceScreen(Screen):
             self.action_show_usage()
             return
 
+        if cmd in ("update", "upgrade", "version"):
+            self.action_check_update()
+            return
+
         if cmd in ("settings", "config", "preferences"):
             self.action_settings()
             return
@@ -1264,6 +1268,8 @@ class WorkspaceScreen(Screen):
             help_text.append("             Expand specialist agent selector dropdown\n", style="dim")
             help_text.append("/usage", style="bold white")
             help_text.append("             Show provider usage, rate limits & token windows\n", style="dim")
+            help_text.append("/update", style="bold white")
+            help_text.append("            Check for GitHub updates and prompt for auto-update\n", style="dim")
             help_text.append("/settings", style="bold white")
             help_text.append("          Configure guardrails, execution limits & theme\n", style="dim")
             help_text.append("/clear", style="bold white")
@@ -1641,6 +1647,23 @@ class WorkspaceScreen(Screen):
                     pass
         except Exception:
             pass
+
+    @work(exclusive=True, group="manual-update-check")
+    async def action_check_update(self) -> None:
+        from app import VERSION
+        from ui.modals import UpdateModal
+        from updater import check_for_update, fetch_latest_release
+        self.notify("Checking GitHub for updates...", title="Rackhand Update", severity="information", timeout=2.0)
+        try:
+            rel = await check_for_update(VERSION)
+            if rel:
+                await self.app.push_screen(UpdateModal(current_version=VERSION, release=rel))
+            else:
+                latest = await fetch_latest_release()
+                latest_title = f" ({latest.title})" if latest else ""
+                self.notify(f"Rackhand is up to date ({VERSION}){latest_title}.", title="Rackhand Update", severity="information", timeout=4.0)
+        except Exception as e:
+            self.notify(f"Update check failed: {e}", title="Rackhand Update", severity="warning", timeout=4.0)
 
     @on(Button.Pressed, "#ws-s-reset")
     def _reset_settings_tab(self) -> None:

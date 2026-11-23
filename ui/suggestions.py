@@ -78,6 +78,7 @@ def get_suggestions(raw_text: str, app: Any = None) -> list[CommandSuggestion]:
             CommandSuggestion("/thinking", "/thinking [level]", "Alias for /effort (set reasoning tokens budget)", completion="/thinking"),
             CommandSuggestion("/agent", "/agent", "Expand specialist agent selector dropdown", completion="/agent"),
             CommandSuggestion("/usage", "/usage", "Show provider usage, rate limits, and rolling token windows", completion="/usage"),
+            CommandSuggestion("/update", "/update", "Check for updates and prompt to auto-update", completion="/update"),
             CommandSuggestion("/settings", "/settings", "Open settings and guardrails configuration", completion="/settings"),
             CommandSuggestion("/clear", "/clear", "Clear current session chat history", completion="/clear"),
             CommandSuggestion("/help", "/help", "Show all available commands and shortcuts", completion="/help"),

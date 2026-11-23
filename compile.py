@@ -107,7 +107,7 @@ def build_wheel(base_dir: Path) -> Path:
     pyproject_toml = base_dir / "pyproject.toml"
     original_toml = pyproject_toml.read_text(encoding="utf-8")
     import re
-    base_version = "0.1.0"
+    base_version = "1.1.0"
     m = re.search(r'version\s*=\s*"([^"]+)"', original_toml)
     if m:
         base_version = m.group(1).split(".post")[0].split("+")[0]

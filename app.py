@@ -16,12 +16,16 @@ from textual.binding import Binding
 from backend import Backend, RealBackend
 from models import DeviceSession, ProviderConfig, Settings, ensure_agy_in_path
 from ui import APP_CSS, WorkspaceScreen, _rackhand_theme
+from ui.modals import UpdateModal
 from ui.styles import _rackhand_console_theme
+from updater import check_for_update
+
+VERSION = "v1.1"
 
 
 class RackhandApp(App):
     TITLE = "Rackhand"
-    SUB_TITLE = "agentic network configuration"
+    SUB_TITLE = f"agentic network configuration · {VERSION}"
     CSS = APP_CSS
     BINDINGS = [Binding("ctrl+q", "quit", "Quit", priority=True)]
 
@@ -87,6 +91,15 @@ class RackhandApp(App):
                 pass
 
         await self.push_screen(WorkspaceScreen())
+        self.run_worker(self._check_for_updates(), group="auto-updater")
+
+    async def _check_for_updates(self) -> None:
+        try:
+            rel = await check_for_update(VERSION)
+            if rel:
+                await self.push_screen(UpdateModal(current_version=VERSION, release=rel))
+        except Exception:
+            pass
 
 
 def main() -> None:
