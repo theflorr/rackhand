@@ -4,7 +4,7 @@
 
 Rackhand connects LLM agents directly to the device, so you don't have to relay output and commands by hand. Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It edits switch and router configs, troubleshoots VLANs and routing protocols, and plans out the exact commands with human approval before touching your hardware.
 
-![Rackhand Terminal UI](screenshot.jpg)
+![Rackhand](screenshot.jpg)
 
 ---
 
@@ -23,7 +23,7 @@ No Python installation or dependencies required: download `rackhand.exe` and run
 * **Multi-Provider AI**: Supports Anthropic Claude, OpenAI, Google Antigravity / Gemini, DeepSeek, OpenRouter, or local Ollama instances.
 * **Clean Dark TUI**: Built on Textual with split live console streaming, agent chat, and side-by-side session management.
 
-![Rackhand Multi-Session Interface and OS Detection](screenshot-agent.jpg)
+![Rackhand](screenshot-agent.png)
 
 ---
 
