@@ -1,8 +1,8 @@
 # Rackhand
 
-**Agentic network engineering in your terminal.**
+**Agentic network engineering - autonomously**
 
-Tired of copy-pasting show commands back and forth between ChatGPT and PuTTY? Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It audits switch and router configs, troubleshoots VLANs and routing protocols, and stages exact remediation commands with human approval before touching your hardware.
+Tired of copy-pasting commands back and forth between ChatGPT and PuTTY? Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It edits switch and router configs, troubleshoots VLANs and routing protocols, and plans out the exact commands with human approval before touching your hardware.
 
 ![Rackhand Terminal UI](screenshot.jpg)
 
@@ -11,7 +11,7 @@ Tired of copy-pasting show commands back and forth between ChatGPT and PuTTY? Ra
 ### Download
 
 Grab the standalone Windows executable from **[GitHub Releases](https://github.com/theflorr/rackhand/releases)**.  
-No Python installation or dependencies required: just download `rackhand.exe` and run it.
+No Python installation or dependencies required: download `rackhand.exe` and run it.
 
 ---
 
