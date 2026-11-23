@@ -27,6 +27,35 @@ No Python installation or dependencies required: download `rackhand.exe` and run
 
 ---
 
+### Safety & Approvals
+
+* **Staged Changes**: Read-only diagnostics run autonomously. Config changes pause for your review, edit, or approval.
+* **Pre-Flight Backups**: Automatically snapshots `running-config` to local disk before applying changes.
+* **Secret Redaction**: Passwords, PSKs, and SNMP strings are masked (`[REDACTED]`) in-flight before hitting the LLM.
+* **Risk Gatekeeper**: Flags destructive commands (`reload`, `write erase`, interface wipes) before execution.
+
+---
+
+### Specialist Agents
+
+Pre-loaded with platform syntax, pagination handling, and commit mechanics:
+
+* **Cisco**: IOS, IOS-XE, NX-OS (vPC / VXLAN), ASA (`packet-tracer`), FTD.
+* **Fortinet**: FortiOS (firewall policies, SD-WAN, VDOMs), FortiSwitch, FortiAP, FortiManager.
+* **Auto-Detect**: Reads device banner on connect to pick the right specialist automatically.
+
+---
+
+### Modes & Commands
+
+* **`/plan`**: Read-only mode. Explores topology and drafts a 4-phase rollout & rollback plan.
+* **`/build`**: Execution mode. Stages commands and verifies live hardware state.
+* **`/compact`**: Compresses conversation into a checkpoint to free token context.
+* **`/fork`**: Clones active state into a new tab to test alternate configs safely.
+* **`/effort`**: Sets reasoning effort (`low`, `medium`, `high`) on thinking models.
+
+---
+
 ### Running from source
 
 If you prefer running with Python:
