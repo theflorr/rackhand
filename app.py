@@ -16,6 +16,7 @@ from textual.binding import Binding
 from backend import Backend, RealBackend
 from models import DeviceSession, ProviderConfig, Settings, ensure_agy_in_path
 from ui import APP_CSS, WorkspaceScreen, _rackhand_theme
+from ui.styles import _rackhand_console_theme
 
 
 class RackhandApp(App):
@@ -70,6 +71,7 @@ class RackhandApp(App):
         try:
             self.register_theme(_rackhand_theme())
             self.theme = self.settings.theme
+            self.console.push_theme(_rackhand_console_theme())
         except Exception:
             pass
 

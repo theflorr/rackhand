@@ -1424,3 +1424,23 @@ def _rackhand_theme():
     )
 
 
+def _rackhand_console_theme():
+    from rich.theme import Theme
+    return Theme({
+        "markdown.h1": "bold #ffffff",
+        "markdown.h2": "bold #38bdf8",
+        "markdown.h3": "bold #e4e4e7",
+        "markdown.h4": "bold #a1a1aa",
+        "markdown.h5": "bold #71717a",
+        "markdown.h6": "dim #71717a",
+        "markdown.block_quote": "italic #a1a1aa",
+        "markdown.link": "underline #38bdf8",
+        "markdown.link_url": "underline #38bdf8",
+        "markdown.list": "#38bdf8",
+        "markdown.item.bullet": "bold #a1a1aa",
+        "markdown.code": "bold #38bdf8 on #18181b",
+        "markdown.code_block": "#e4e4e7 on #111111",
+    })
+
+
+

@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from rich import box
 from rich.console import Group
-from rich.markdown import Markdown
+from rich.markdown import BlockQuote, Heading, Markdown
 from rich.panel import Panel
 from rich.text import Text
 from textual.app import ComposeResult
@@ -93,13 +93,42 @@ class UserMessage(ChatMessage):
         return msg
 
 
+class ThemeHeading(Heading):
+    """Custom Heading renderer that applies theme-matching colors instead of Rich default magenta."""
+    STYLE_MAP = {
+        "h1": "bold #ffffff",
+        "h2": "bold #38bdf8",
+        "h3": "bold #e4e4e7",
+        "h4": "bold #a1a1aa",
+        "h5": "bold #71717a",
+        "h6": "dim #71717a",
+    }
+
+    def on_enter(self, context: Any) -> None:
+        self.text = Text()
+        style = self.STYLE_MAP.get(self.tag, "bold #e4e4e7")
+        context.enter_style(style)
+
+
+class ThemeBlockQuote(BlockQuote):
+    """Custom BlockQuote renderer using subtle slate instead of Rich default magenta."""
+    style_name = "italic #a1a1aa"
+
+
+class ThemedMarkdown(Markdown):
+    """Markdown component pre-configured with Rackhand theme styles."""
+    elements = dict(Markdown.elements)
+    elements["heading_open"] = ThemeHeading
+    elements["blockquote_open"] = ThemeBlockQuote
+
+
 class AssistantMessage(ChatMessage):
     def __init__(self, markdown: str = ""):
         super().__init__(css_class="assistant")
         self.markdown = markdown
 
     def render(self) -> Panel:
-        body = Markdown(self.markdown) if self.markdown.strip() else Text("● thinking...", style="dim")
+        body = ThemedMarkdown(self.markdown) if self.markdown.strip() else Text("● thinking...", style="dim")
         return Panel(
             body,
             title="rackhand",
@@ -122,7 +151,7 @@ class CompactionCheckpointMessage(ChatMessage):
         self.tokens_compacted = tokens_compacted
 
     def render(self) -> Panel:
-        body = Markdown(self.summary) if self.summary.strip() else Text("No checkpoint summary generated.", style="dim")
+        body = ThemedMarkdown(self.summary) if self.summary.strip() else Text("No checkpoint summary generated.", style="dim")
         sub_text = "Session Checkpoint · Prior turns compacted"
         return Panel(
             body,

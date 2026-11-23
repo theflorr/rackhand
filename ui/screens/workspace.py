@@ -32,7 +32,7 @@ from models import (
 )
 from ui.messages import (
     AssistantMessage, ChatMessage, CompactionCheckpointMessage, GenericMessage,
-    ProposalVerdictMessage, ToolBundleMessage, ToolCallEntry, UserMessage,
+    ProposalVerdictMessage, ThemedMarkdown, ToolBundleMessage, ToolCallEntry, UserMessage,
 )
 from ui.suggestions import CommandSuggestionsBox, PromptInput
 from agents import (
@@ -719,7 +719,7 @@ class WorkspaceScreen(Screen):
 
     @staticmethod
     def _agent_panel(md: str) -> Panel:
-        return Panel(Markdown(md), title="rackhand", title_align="left", border_style="#2a2a2a",
+        return Panel(ThemedMarkdown(md), title="rackhand", title_align="left", border_style="#2a2a2a",
                      box=box.ROUNDED, padding=(0, 1))
 
     @staticmethod
