@@ -1092,16 +1092,67 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 
 #console-device-select {
-    width: 28;
+    width: auto;
+    min-width: 32;
+    max-width: 48;
     height: 1;
+    min-height: 1;
     border: none;
-    background: #181818;
-    color: #e0e0e0;
+    background: transparent;
+    margin: 0;
+    padding: 0;
 }
 
-#console-device-select:focus {
-    background: #222222;
+#console-device-select SelectCurrent {
+    height: 1;
+    min-height: 1;
+    border: none;
+    background: #1a1a1a;
+    color: #e4e4e7;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#console-device-select SelectCurrent:hover {
+    background: #242424;
     color: #ffffff;
+}
+
+#console-device-select:focus SelectCurrent {
+    background: #282828;
+    color: #ffffff;
+}
+
+#console-device-select SelectOverlay {
+    width: auto;
+    min-width: 38;
+    max-width: 52;
+    height: auto;
+    max-height: 14;
+    background: #141414;
+    border: round #2e2e2e;
+    padding: 0;
+}
+
+#console-device-select OptionList {
+    background: #141414;
+    color: #d4d4d8;
+    padding: 0;
+}
+
+#console-device-select OptionList:focus {
+    background: #141414;
+}
+
+#console-device-select OptionList > .option-list--option {
+    padding: 0 1;
+    color: #a1a1aa;
+}
+
+#console-device-select OptionList > .option-list--option-highlighted {
+    background: #27272a;
+    color: #ffffff;
+    text-style: bold;
 }
 
 #console-hdr-mid {

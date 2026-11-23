@@ -164,3 +164,46 @@ def test_command_suggestions_box_no_wrapping():
     # Ensure ellipsis is used to clip the long description
     assert "…" in non_empty_lines[1]
 
+
+def test_console_device_picker_options():
+    from ui.screens.workspace import WorkspaceScreen
+    from textual.app import App
+    from textual._context import active_app
+    from textual.widgets import Select
+
+    class DummyApp(App):
+        def __init__(self):
+            super().__init__()
+            dev1 = DeviceSession(
+                id="dev1",
+                profile=DeviceProfile(name="cisco-core-switch-01", vendor=Vendor.CISCO_IOS, transport=Transport.SSH),
+                hostname="Core-Switch-Primary-01",
+            )
+            self.sessions = [dev1]
+            self.active = dev1
+            self.active_id = "dev1"
+            self.provider = ProviderConfig(key="p1", name="prov", model="m1", api_key="k1")
+            self.settings = Settings()
+            self.backend = MagicMock()
+
+    app = DummyApp()
+    token = active_app.set(app)
+    try:
+        screen = WorkspaceScreen()
+        screen._app = app
+        mock_sel = MagicMock(spec=Select)
+        mock_sel._options = []
+        screen.query_one = MagicMock(return_value=mock_sel)
+        screen._update_console_header = MagicMock()
+
+        screen.refresh_console_devices()
+        mock_sel.set_options.assert_called_once()
+        opts = mock_sel.set_options.call_args[0][0]
+        assert len(opts) == 1
+        label, val = opts[0]
+        assert val == "dev1"
+        assert "Core-Switch-Primary-01" in label
+        assert "[SSH]" in label
+    finally:
+        active_app.reset(token)
+

@@ -484,16 +484,17 @@ class WorkspaceScreen(Screen):
         sessions = getattr(self.app, "sessions", [])
         if not sessions:
             if [v for _, v in sel._options if v not in (Select.BLANK, Select.NULL)] != ["none"]:
-                sel.set_options([("no devices connected", "none")])
+                sel.set_options([("No devices connected", "none")])
                 sel.value = "none"
             self._update_console_header()
             return
         options = []
         for s in sessions:
             name = s.hostname or s.profile.name
-            if len(name) > 18:
-                name = name[:17] + "…"
-            options.append((f"{name} ({s.profile.transport.value})", s.id))
+            if len(name) > 30:
+                name = name[:29] + "…"
+            trans = s.profile.transport.value.upper()
+            options.append((f"{name}  [{trans}]", s.id))
         cur_val = getattr(self.app, "active_id", None)
         existing = [(str(p.plain if hasattr(p, 'plain') else p), v) for p, v in sel._options if v not in (Select.BLANK, Select.NULL)]
         if existing != options:
@@ -541,7 +542,7 @@ class WorkspaceScreen(Screen):
                     with Horizontal(id="console-header"):
                         with Horizontal(id="console-hdr-left"):
                             yield Static("● CONNECTED", id="console-status-badge")
-                            yield Select([], prompt="no devices", id="console-device-select", allow_blank=True)
+                            yield Select([], prompt="Select device...", id="console-device-select", allow_blank=True)
                         with Horizontal(id="console-hdr-mid"):
                             yield Static("", id="console-device-meta")
                         with Horizontal(id="console-hdr-right"):
