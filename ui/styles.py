@@ -710,8 +710,8 @@ Label { color: #666666; }
 .sidebar-btn-row {
     width: 100%;
     height: auto;
-    align-horizontal: left;
-    margin-top: 0;
+    align-horizontal: center;
+    margin-top: 1;
     margin-bottom: 0;
 }
 #sidebar Button {

@@ -447,8 +447,6 @@ class WorkspaceScreen(Screen):
                     pass
                 with Horizontal(classes="sidebar-btn-row"):
                     yield Button("+ new session", id="btn-new-session")
-                with Horizontal(classes="sidebar-btn-row"):
-                    yield Button("settings", id="btn-sidebar-settings")
             yield SidebarDivider()
             with TabbedContent(id="main", initial="tab-agent"):
                 with TabPane("agent", id="tab-agent"):
@@ -492,7 +490,7 @@ class WorkspaceScreen(Screen):
                             hdr.append("› ", style="bold #cccccc")
                             hdr.append("SETTINGS & PREFERENCES", style="bold white")
                             yield Static(hdr, id="settings-title")
-                            yield Static("Configure safety guardrails, execution limits, and workspace appearance.", id="settings-subtitle")
+                            yield Static("Configure safety guardrails and execution limits.", id="settings-subtitle")
 
                         # 1. Safety & Guardrails
                         with Vertical(classes="settings-card"):
@@ -550,21 +548,6 @@ class WorkspaceScreen(Screen):
                             yield Label("Transcript Directory", classes="settings-field-lbl")
                             yield Input("~/.rackhand/transcripts", id="ws-s-dir")
                             yield Static("Path where session audit logs are stored.", classes="settings-field-help")
-
-                        # 4. Appearance
-                        with Vertical(classes="settings-card"):
-                            with Vertical(classes="settings-card-header"):
-                                yield Static("APPEARANCE", classes="settings-card-title")
-                                yield Static("Color scheme for workspace and terminal cards.", classes="settings-card-desc")
-
-                            yield Label("Color Theme", classes="settings-field-lbl")
-                            yield Select(
-                                [(t, t) for t in THEMES],
-                                value="rackhand",
-                                allow_blank=False,
-                                id="ws-s-theme",
-                            )
-                            yield Static("Terminal theme applied across all screens and widgets.", classes="settings-field-help")
 
                         with Horizontal(classes="settings-btn-row"):
                             yield Button("Save settings", variant="primary", id="ws-s-save")
@@ -1296,7 +1279,6 @@ class WorkspaceScreen(Screen):
             self.query_one("#ws-s-dir", Input).value = s.transcript_dir
             self.query_one("#ws-s-steps", Input).value = str(s.max_agent_steps)
             self.query_one("#ws-s-timeout", Input).value = str(s.command_timeout_s)
-            self.query_one("#ws-s-theme", Select).value = s.theme if s.theme in THEMES else "rackhand"
         except Exception:
             pass
 
@@ -1312,7 +1294,6 @@ class WorkspaceScreen(Screen):
         except Exception:
             pass
 
-    @on(Button.Pressed, "#btn-sidebar-settings")
     @on(Button.Pressed, "#btn-composer-settings")
     def _open_settings(self) -> None:
         self.action_settings()
@@ -1329,7 +1310,6 @@ class WorkspaceScreen(Screen):
             self.query_one("#ws-s-dir", Input).value = default_s.transcript_dir
             self.query_one("#ws-s-steps", Input).value = str(default_s.max_agent_steps)
             self.query_one("#ws-s-timeout", Input).value = str(default_s.command_timeout_s)
-            self.query_one("#ws-s-theme", Select).value = default_s.theme
             self.notify("Settings reset to defaults. Click Save settings to apply.", title="Defaults")
         except Exception:
             pass
@@ -1369,7 +1349,7 @@ class WorkspaceScreen(Screen):
             max_agent_steps=steps,
             command_timeout_s=timeout,
             disable_paging=q("#ws-s-paging", Checkbox).value,
-            theme=sel_value(q("#ws-s-theme", Select)) or "rackhand",
+            theme=self.app.settings.theme,
         )
         self.app.apply_settings(new_settings)
         self.notify("Settings saved", title="Configuration")

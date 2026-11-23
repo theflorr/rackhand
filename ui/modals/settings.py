@@ -38,7 +38,7 @@ class SettingsModal(ModalScreen[Optional[Settings]]):
                 hdr.append("› ", style="bold #cccccc")
                 hdr.append("SETTINGS & PREFERENCES", style="bold white")
                 yield Static(hdr, id="settings-title")
-                yield Static("Configure safety guardrails, execution limits, and workspace appearance.", id="settings-subtitle")
+                yield Static("Configure safety guardrails and execution limits.", id="settings-subtitle")
 
             with VerticalScroll(id="settings-scroll"):
                 # 1. Safety & Guardrails
@@ -98,21 +98,6 @@ class SettingsModal(ModalScreen[Optional[Settings]]):
                     yield Input(s.transcript_dir, id="s-dir")
                     yield Static("Path where session audit logs are stored.", classes="settings-field-help")
 
-                # 4. Appearance
-                with Vertical(classes="settings-card"):
-                    with Vertical(classes="settings-card-header"):
-                        yield Static("APPEARANCE", classes="settings-card-title")
-                        yield Static("Color scheme for workspace and terminal cards.", classes="settings-card-desc")
-
-                    yield Label("Color Theme", classes="settings-field-lbl")
-                    yield Select(
-                        [(t, t) for t in THEMES],
-                        value=s.theme if s.theme in THEMES else "rackhand",
-                        allow_blank=False,
-                        id="s-theme",
-                    )
-                    yield Static("Terminal theme applied across all screens and widgets.", classes="settings-field-help")
-
             with Horizontal(classes="settings-btn-row"):
                 yield Button("Save settings", variant="primary", id="s-save")
                 yield Button("Cancel", id="s-cancel")
@@ -136,5 +121,5 @@ class SettingsModal(ModalScreen[Optional[Settings]]):
             max_agent_steps=_int(q("#s-steps", Input).value, 25),
             command_timeout_s=_int(q("#s-timeout", Input).value, 30),
             disable_paging=q("#s-paging", Checkbox).value,
-            theme=sel_value(q("#s-theme", Select)) or "rackhand",
+            theme=self.s.theme,
         ))
