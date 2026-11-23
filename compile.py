@@ -83,11 +83,43 @@ def build_wheel(base_dir: Path) -> Path:
         shutil.rmtree(egg_info, ignore_errors=True)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(dist_dir)]
-    res = subprocess.run(cmd, cwd=str(base_dir), capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"[ERROR] Wheel build failed:\n{res.stderr or res.stdout}")
-        sys.exit(res.returncode)
+    # Inject dynamic build timestamp version into pyproject.toml
+    pyproject_toml = base_dir / "pyproject.toml"
+    original_toml = pyproject_toml.read_text(encoding="utf-8")
+    import re
+    base_version = "0.1.0"
+    m = re.search(r'version\s*=\s*"([^"]+)"', original_toml)
+    if m:
+        base_version = m.group(1).split(".post")[0].split("+")[0]
+
+    build_version = f"{base_version}.post{int(time.time())}"
+    modified_toml = re.sub(r'version\s*=\s*"[^"]+"', f'version = "{build_version}"', original_toml, count=1)
+    pyproject_toml.write_text(modified_toml, encoding="utf-8")
+
+    try:
+        # Prefer pip wheel as pip is universally available in all Python installations
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            "-w",
+            str(dist_dir),
+            ".",
+        ]
+        res = subprocess.run(cmd, cwd=str(base_dir), capture_output=True, text=True)
+        if res.returncode != 0:
+            # Fallback to python -m build if pip wheel failed
+            cmd_build = [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(dist_dir)]
+            res = subprocess.run(cmd_build, cwd=str(base_dir), capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"[ERROR] Wheel build failed:\n{res.stderr or res.stdout}")
+                sys.exit(res.returncode)
+    finally:
+        # Always restore clean pyproject.toml so working tree stays pristine
+        pyproject_toml.write_text(original_toml, encoding="utf-8")
 
     wheels = list(dist_dir.glob("rackhand-*.whl"))
     if not wheels:
@@ -161,10 +193,12 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
             build_rs.write_text(build_content, encoding="utf-8")
             print("      ✓ Injected Windows icon embedding hook into build.rs.")
 
-    # Patch distribution.rs to auto-update cache when embedded project changes
+    # Patch distribution.rs to auto-update cache and clean old version directories
     dist_rs = pyapp_dir / "src" / "distribution.rs"
     dist_content = dist_rs.read_text(encoding="utf-8")
-    if ".project_hash" not in dist_content:
+    is_crlf = "\r\n" in dist_content
+    dist_norm = dist_content.replace("\r\n", "\n")
+    if ".project_hash" not in dist_norm:
         target = """    if !app::install_dir().is_dir() {
         materialize()?;
 
@@ -172,7 +206,20 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
             install_project()?;
         }
     }"""
-        replacement = """    let embedded = app::embedded_project();
+        replacement = """    // Clean up older version directories from previous builds
+    if let Some(parent) = app::install_dir().parent() {
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() && entry.file_name() != OsStr::new(&app::project_version()) {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    let embedded = app::embedded_project();
     let hash_file = app::install_dir().join(".project_hash");
     let mut needs_install = false;
 
@@ -205,10 +252,30 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
             let _ = fs::write(&hash_file, current_hash);
         }
     }"""
-        if target in dist_content:
-            dist_content = dist_content.replace(target, replacement, 1)
-            dist_rs.write_text(dist_content, encoding="utf-8")
+        if target in dist_norm:
+            dist_norm = dist_norm.replace(target, replacement, 1)
+            final_content = dist_norm.replace("\n", "\r\n") if is_crlf else dist_norm
+            dist_rs.write_text(final_content, encoding="utf-8")
             print("      ✓ Injected embedded project cache auto-invalidation into distribution.rs.")
+    elif "Clean up older version directories" not in dist_norm:
+        cleanup_hook = """    // Clean up older version directories from previous builds
+    if let Some(parent) = app::install_dir().parent() {
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() && entry.file_name() != OsStr::new(&app::project_version()) {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    let embedded = app::embedded_project();"""
+        dist_norm = dist_norm.replace("    let embedded = app::embedded_project();", cleanup_hook, 1)
+        final_content = dist_norm.replace("\n", "\r\n") if is_crlf else dist_norm
+        dist_rs.write_text(final_content, encoding="utf-8")
+        print("      ✓ Injected version directory auto-cleanup hook into distribution.rs.")
 
 
 def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output_exe: Path) -> None:
@@ -222,15 +289,8 @@ def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output
     if main_rs.exists():
         main_rs.touch()
 
-    # Parse version from pyproject.toml
-    base_dir = pyapp_dir.parent.parent
-    pyproject_toml = base_dir / "pyproject.toml"
-    project_version = "0.1.0"
-    if pyproject_toml.exists():
-        import re
-        m = re.search(r'version\s*=\s*"([^"]+)"', pyproject_toml.read_text(encoding="utf-8"))
-        if m:
-            project_version = m.group(1)
+    # Read project version from built wheel filename: rackhand-<version>-py3-none-any.whl
+    project_version = wheel_path.stem.split("-")[1]
 
     env = os.environ.copy()
     env["PYAPP_PROJECT_NAME"] = "rackhand"
@@ -248,10 +308,21 @@ def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output
         env["PYAPP_DISTRIBUTION_EMBED"] = "0"
         print("      Mode: Lightweight bootstrap (~8MB, downloads Python 3.12 on first run)")
 
+    print(f"      Target Version: {project_version}")
     print("      Invoking Cargo (Rust) release compilation...")
     start_time = time.time()
 
     target_args = ["--target", "x86_64-pc-windows-gnu"] if sys.platform != "win32" else []
+
+    if target_args:
+        built_exe = pyapp_dir / "target" / target_args[1] / "release" / "pyapp.exe"
+    else:
+        built_exe = pyapp_dir / "target" / "release" / "pyapp.exe"
+
+    # Remove previous binary if it exists so we are guaranteed to get the newly built one
+    if built_exe.exists():
+        built_exe.unlink(missing_ok=True)
+
     cargo = shutil.which("cargo") or "cargo"
     cmd = [cargo, "build", "--release"] + target_args
     res = subprocess.run(cmd, cwd=str(pyapp_dir), env=env)
@@ -260,15 +331,10 @@ def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output
         sys.exit(res.returncode)
 
     elapsed = time.time() - start_time
-    candidates = [
-        pyapp_dir / "target" / "x86_64-pc-windows-gnu" / "release" / "pyapp.exe",
-        pyapp_dir / "target" / "release" / "pyapp.exe",
-    ]
-    built_exe = next((p for p in candidates if p.exists()), None)
-    if not built_exe:
-        found = list(pyapp_dir.glob("target/**/pyapp.exe"))
-        if found:
-            built_exe = found[0]
+    if not built_exe.exists():
+        candidates = sorted(pyapp_dir.glob("target/**/pyapp.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if candidates:
+            built_exe = candidates[0]
         else:
             print(f"[ERROR] Expected binary not found in target directories.")
             sys.exit(1)
