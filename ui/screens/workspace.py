@@ -40,7 +40,7 @@ from agents import (
     to_plan_agent, to_build_agent, is_plan_agent,
 )
 from ui.modals import (
-    AgentPickerModal, ApprovalModal, ConnectScreen, EffortPickerModal, ProvidersScreen, SettingsModal,
+    AgentPickerModal, ApprovalModal, ConnectScreen, ProvidersScreen, SettingsModal,
     UsageModal,
 )
 from ui.styles import (
@@ -1900,7 +1900,7 @@ class WorkspaceScreen(Screen):
         return None
 
     def action_effort(self, arg: str = "") -> None:
-        """Set or open picker for model reasoning effort / thinking variant."""
+        """Set model reasoning effort / thinking variant (off, low, medium, high, max)."""
         raw = arg.strip().lower()
         valid_map = {
             "off": "off",
@@ -1939,7 +1939,7 @@ class WorkspaceScreen(Screen):
                 ))
             else:
                 self._bubble(Panel(
-                    Text(f"Unknown effort level '{arg}'.\nValid options: off, low, medium, high, max\nOr type /effort without arguments to open the selection modal.", style="bold #f59e0b"),
+                    Text(f"Unknown effort level '{arg}'.\nValid options: off, low, medium, high, max\nUsage: /effort <level>", style="bold #f59e0b"),
                     border_style="#d97706",
                     box=box.ROUNDED,
                     title="Invalid Effort",
@@ -1947,24 +1947,14 @@ class WorkspaceScreen(Screen):
                 ))
             return
 
-        self.run_worker(self._open_effort_picker())
-
-    async def _open_effort_picker(self) -> None:
-        current = getattr(self.app.settings, "reasoning_effort", "medium") or "medium"
-        picked = await self.app.push_screen_wait(EffortPickerModal(current_effort=current))
-        if picked and picked != current:
-            self.app.settings.reasoning_effort = picked
-            self.app.apply_settings(self.app.settings)
-            model_swapped = self._sync_provider_model_variant(picked)
-            extra = f"\nActive Model variant switched to: {model_swapped}" if model_swapped else ""
-            self.notify(f"Reasoning effort set to: {picked.upper()}", title="Model Effort")
-            self._bubble(Panel(
-                Text(f"Model reasoning effort updated to: {picked.upper()}{extra}\nChoice has been saved and will persist across sessions.", style="bold #38bdf8"),
-                border_style="#0284c7",
-                box=box.ROUNDED,
-                title="Model Effort",
-                padding=(0, 1),
-            ))
+        cur = getattr(self.app.settings, "reasoning_effort", "medium") or "medium"
+        self._bubble(Panel(
+            Text(f"Current reasoning effort: {cur.upper()}\nUsage: /effort <level>\nValid options: off, low, medium, high, max", style="bold #38bdf8"),
+            border_style="#0284c7",
+            box=box.ROUNDED,
+            title="Model Effort",
+            padding=(0, 1),
+        ))
 
     def action_rename(self, new_title: str = "") -> None:
         """Rename the current session title."""

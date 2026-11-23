@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 from models import ProviderConfig, Settings
 from llm_engine import RealLLMEngine
-from ui.modals.effort_picker import EFFORT_LEVELS, EffortPickerModal
 from ui.suggestions import get_suggestions
 
 
@@ -126,14 +125,13 @@ def test_ui_workspace_effort_commands_and_aliases():
         # Should NOT mutate setting
         assert app.settings.reasoning_effort == "off"
         assert screen._bubble.call_count >= 1
+
+        # 6. No arguments: /effort displays current level
+        bubble_count_before = screen._bubble.call_count
+        screen._handle_command("/effort")
+        assert screen._bubble.call_count == bubble_count_before + 1
     finally:
         active_app.reset(token)
-
-
-def test_effort_picker_modal_levels():
-    modal = EffortPickerModal(current_effort="high")
-    assert modal._current_effort == "high"
-    assert len(EFFORT_LEVELS) == 5
 
 
 def test_sync_provider_model_variant():
