@@ -2,7 +2,7 @@
 
 **Agentic network engineering - autonomously**
 
-Tired of copy-pasting commands back and forth between ChatGPT and PuTTY? Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It edits switch and router configs, troubleshoots VLANs and routing protocols, and plans out the exact commands with human approval before touching your hardware.
+Copying CLI output into a chat window, then pasting the suggested commands back into the terminal is done. Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It edits switch and router configs, troubleshoots VLANs and routing protocols, and plans out the exact commands with human approval before touching your hardware.
 
 ![Rackhand Terminal UI](screenshot.jpg)
 
