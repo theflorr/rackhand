@@ -216,25 +216,25 @@ class RealLLMEngine:
                 f"- **Current CLI Prompt**: `{session.prompt}`\n"
                 f"- **Execution Mode**: {'Unprivileged User EXEC (>)' if session.prompt.endswith('>') else 'Privileged EXEC / Config (#)'}\n"
                 f"\n"
-                f"You have direct access to the `run_command` tool to execute real CLI commands on `{session.hostname}` right now.\n"
-                f"Always query the device using `run_command` when diagnostic data is needed before drawing conclusions.\n"
-                f"If configuration changes are requested, use the `propose_change` tool so the operator can review and approve them."
+                f"You have direct access to the `run_command` tool to execute real CLI commands on `{session.hostname}`.\n"
+                f"Query the device using `run_command` when diagnostic data is needed before drawing conclusions.\n"
+                f"If configuration changes are requested, use the `propose_change` tool so the user can review and approve them."
             )
         else:
             hw_context = (
                 "\n\n### HARDWARE STATUS\n"
-                "No live device is currently connected. You can assist the operator with network engineering questions, "
-                "troubleshooting methodologies, command syntax, configuration design, and architecture planning."
+                "No live device is currently connected. Answer technical network questions, "
+                "troubleshooting steps, command syntax, configuration design, and architecture directly."
             )
 
         plan_notice = ""
         if is_plan_mode or "plan" in agent_id:
             plan_notice = (
                 "\n\n### CURRENT MODE: PLAN MODE (STRICT READ-ONLY)\n"
-                "- You are operating in PLAN MODE. You are strictly in read-only analysis, discovery, and planning mode.\n"
+                "- Plan Mode is active. Operation is strictly read-only analysis, discovery, and planning.\n"
                 "- Use `run_command` ONLY for safe diagnostic commands ('show', 'get', 'display').\n"
-                "- Configuration mutation commands and `propose_change` are strictly disabled.\n"
-                "- Formulate your comprehensive implementation plan, ask discovery questions, and direct user to /build when done."
+                "- Configuration changes and `propose_change` are disabled.\n"
+                "- Output a step-by-step implementation plan, ask discovery questions, and prompt the user to use /build when done."
             )
 
         return f"{base_prompt}{hw_context}{plan_notice}"
