@@ -297,12 +297,14 @@ class ChatSession:
     has_prompt: bool = False
     tokens_in: int = 0
     tokens_out: int = 0
+    mode: str = "build"
+    agent_id: Optional[str] = None
 
     @property
     def display_title(self) -> str:
         if self.title:
             return self.title
-        return f"Session {self.num}#"
+        return f"Session #{self.num}"
 
 
 @dataclass
@@ -377,54 +379,85 @@ class AgentError:
 AgentEvent = Union[AgentText, AgentToolCall, AgentToolResult, AgentProposal, AgentDone, AgentError]
 
 
+@dataclass
+class Snapshot:
+    id: str                                  # 5-character hash, e.g. 'A7K9M'
+    device: str
+    timestamp: str
+    destination: str                         # 'local' or 'device'
+    config_captured: bool = False
+    stats_captured: bool = False
+    local_path: Optional[str] = None
+    device_path: Optional[str] = None
+    health_baseline: dict[str, str] = field(default_factory=dict)
+    health_summary: str = ""
+
+
 # =============================================================================
 # 3. SETTINGS
 # =============================================================================
 
 @dataclass
 class Settings:
-    approval_mode: str = "ask_changes"   # ask_all / ask_changes / auto_safe (dangerous always asks)
+    approval_mode: str = "ask_changes"   # ask_all / ask_changes / autonomous / auto_safe
     redact_secrets: bool = True          # mask passwords/PSKs/SNMP before they reach the LLM
-    backup_before_change: bool = True
+    backup_before_change: bool = True    # legacy alias
+    snapshot_config: bool = True         # Pull running-config before changes
+    snapshot_health_stats: bool = False  # Pull basic health statistics baseline (off by default)
+    snapshot_destination: str = "local"  # 'local' (local disk) or 'device' (on-device storage)
+    snapshot_dir: str = "~/.rackhand/snapshots"
     keep_transcripts: bool = True
     transcript_dir: str = "~/.rackhand/transcripts"
     max_agent_steps: int = 25
     command_timeout_s: int = 30
     disable_paging: bool = True          # terminal length 0 / set output standard
     theme: str = "rackhand"
+    reasoning_effort: str = "medium"     # off / low / medium / high / max
 
     def to_dict(self) -> dict:
         return {
             "approval_mode": self.approval_mode,
             "redact_secrets": self.redact_secrets,
             "backup_before_change": self.backup_before_change,
+            "snapshot_config": self.snapshot_config,
+            "snapshot_health_stats": self.snapshot_health_stats,
+            "snapshot_destination": self.snapshot_destination,
+            "snapshot_dir": self.snapshot_dir,
             "keep_transcripts": self.keep_transcripts,
             "transcript_dir": self.transcript_dir,
             "max_agent_steps": self.max_agent_steps,
             "command_timeout_s": self.command_timeout_s,
             "disable_paging": self.disable_paging,
             "theme": self.theme,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> Settings:
+        snap_cfg = d.get("snapshot_config", d.get("backup_before_change", True))
         return cls(
             approval_mode=d.get("approval_mode", "ask_changes"),
             redact_secrets=d.get("redact_secrets", True),
-            backup_before_change=d.get("backup_before_change", True),
+            backup_before_change=snap_cfg,
+            snapshot_config=snap_cfg,
+            snapshot_health_stats=d.get("snapshot_health_stats", False),
+            snapshot_destination=d.get("snapshot_destination", "local"),
+            snapshot_dir=d.get("snapshot_dir", "~/.rackhand/snapshots"),
             keep_transcripts=d.get("keep_transcripts", True),
             transcript_dir=d.get("transcript_dir", "~/.rackhand/transcripts"),
             max_agent_steps=d.get("max_agent_steps", 25),
             command_timeout_s=d.get("command_timeout_s", 30),
             disable_paging=d.get("disable_paging", True),
             theme=d.get("theme", "rackhand"),
+            reasoning_effort=d.get("reasoning_effort", "medium"),
         )
 
 
 APPROVAL_LABELS = {
     "ask_all": "ask: every command",
     "ask_changes": "ask: changes",
-    "auto_safe": "ask: dangerous only",
+    "autonomous": "ask: autonomous (AI review)",
+    "auto_safe": "ask: dangerous only (AI danger check)",
 }
 
 
@@ -497,7 +530,7 @@ class ProviderSpec:
 
 
 _G1, _G2, _G3, _G4, _G5 = (
-    "AI APIs",
+    "Unconfigured",
     "Cloud Providers",
     "Gateways",
     "Local / Self-hosted",
@@ -508,17 +541,16 @@ _OA = ApiScheme.OPENAI_CHAT
 PROVIDERS: list[ProviderSpec] = [
     ProviderSpec("anthropic", "Anthropic", _G1, ApiScheme.ANTHROPIC, "https://api.anthropic.com",
                  AuthStyle.X_API_KEY, "ANTHROPIC_API_KEY", vision=True),
-    ProviderSpec("openai", "OpenAI", _G1, ApiScheme.OPENAI_RESPONSES, "https://api.openai.com/v1",
-                 AuthStyle.BEARER, "OPENAI_API_KEY", vision=True,
-                 note="Switch scheme to chat/completions if you prefer the older API."),
-    ProviderSpec("gemini", "Google Gemini", _G1, ApiScheme.GEMINI,
-                 "https://generativelanguage.googleapis.com/v1beta", AuthStyle.QUERY, "GEMINI_API_KEY", vision=True),
+    ProviderSpec("openai", "OpenAI", _G1, _OA, "https://api.openai.com/v1",
+                 AuthStyle.BEARER, "OPENAI_API_KEY", vision=True),
+    ProviderSpec("gemini", "Google Gemini", _G1, _OA,
+                 "https://generativelanguage.googleapis.com/v1beta/openai", AuthStyle.BEARER, "GEMINI_API_KEY", vision=True),
     ProviderSpec("antigravity", "Google Antigravity", _G1, ApiScheme.ANTIGRAVITY, "local:agy",
                  AuthStyle.NONE, note="Native local Google Antigravity (Gemini 3.8 / Claude Sonnet 4.6)."),
     ProviderSpec("xai", "xAI", _G1, _OA, "https://api.x.ai/v1", key_env="XAI_API_KEY"),
     ProviderSpec("mistral", "Mistral", _G1, _OA, "https://api.mistral.ai/v1", key_env="MISTRAL_API_KEY"),
     ProviderSpec("deepseek", "DeepSeek", _G1, _OA, "https://api.deepseek.com", key_env="DEEPSEEK_API_KEY"),
-    ProviderSpec("cohere", "Cohere", _G1, ApiScheme.COHERE, "https://api.cohere.com/v2", key_env="COHERE_API_KEY"),
+    ProviderSpec("cohere", "Cohere", _G1, _OA, "https://api.cohere.com/compatibility/v1", key_env="COHERE_API_KEY"),
     ProviderSpec("moonshot", "Moonshot (Kimi)", _G1, _OA, "https://api.moonshot.ai/v1", key_env="MOONSHOT_API_KEY"),
     ProviderSpec("zai", "Z.ai (GLM)", _G1, _OA, "https://api.z.ai/api/paas/v4", key_env="ZAI_API_KEY"),
     ProviderSpec("qwen", "Alibaba Qwen (DashScope)", _G1, _OA,
@@ -534,15 +566,15 @@ PROVIDERS: list[ProviderSpec] = [
                  tools=False, note="No tool calling: the agent can chat but cannot run device commands."),
     ProviderSpec("openrouter", "OpenRouter", _G3, _OA, "https://openrouter.ai/api/v1", key_env="OPENROUTER_API_KEY",
                  note="One key, hundreds of models."),
-    ProviderSpec("litellm", "LiteLLM proxy", _G3, _OA, "http://localhost:4000", key_env="LITELLM_API_KEY"),
-    ProviderSpec("ollama", "Ollama", _G4, ApiScheme.OLLAMA, "http://localhost:11434", AuthStyle.NONE,
+    ProviderSpec("litellm", "LiteLLM proxy", _G3, _OA, "http://localhost:4000/v1", key_env="LITELLM_API_KEY"),
+    ProviderSpec("ollama", "Ollama", _G4, _OA, "http://localhost:11434/v1", AuthStyle.NONE,
                  note="Local models. Pick one with tool-calling support."),
     ProviderSpec("lmstudio", "LM Studio", _G4, _OA, "http://localhost:1234/v1", AuthStyle.NONE),
     ProviderSpec("vllm", "vLLM", _G4, _OA, "http://localhost:8000/v1", AuthStyle.NONE),
     ProviderSpec("llamacpp", "llama.cpp server", _G4, _OA, "http://localhost:8080/v1", AuthStyle.NONE),
     ProviderSpec("azure", "Azure OpenAI", _G5, ApiScheme.AZURE, "https://YOUR-RESOURCE.openai.azure.com",
                  AuthStyle.API_KEY_HEADER, "AZURE_OPENAI_API_KEY",
-                 extras_hint="api_version=2025-01-01-preview\ndeployment=my-deployment"),
+                 extras_hint="api_version=2024-08-01-preview\ndeployment=my-deployment"),
     ProviderSpec("bedrock", "AWS Bedrock", _G5, ApiScheme.BEDROCK,
                  "https://bedrock-runtime.us-east-1.amazonaws.com", AuthStyle.AWS_SIGV4,
                  extras_hint="region=us-east-1\naccess_key_id=\nsecret_access_key=\nsession_token="),
@@ -571,12 +603,13 @@ PROVIDER_MODELS: dict[str, list[tuple[str, str]]] = {
         ("GPT-4o mini", "gpt-4o-mini"),
     ],
     "gemini": [
-        ("Gemini 4 Neon (Recommended)", "gemini-4-neon"),
-        ("Gemini 4 Hydrogen (Fast)", "gemini-4-hydrogen"),
-        ("Gemini 4 Carbon", "gemini-4-carbon"),
-        ("Gemini Omni 1.2 Flash", "gemini-omni-1.2-flash"),
+        ("Gemini 2.5 Flash (Recommended)", "gemini-2.5-flash"),
         ("Gemini 2.5 Pro", "gemini-2.5-pro"),
         ("Gemini 1.5 Pro", "gemini-1.5-pro"),
+        ("Gemini 1.5 Flash", "gemini-1.5-flash"),
+        ("Gemini 4 Neon", "gemini-4-neon"),
+        ("Gemini 4 Hydrogen", "gemini-4-hydrogen"),
+        ("Gemini 4 Carbon", "gemini-4-carbon"),
     ],
     "antigravity": [
         ("Gemini 3.8 Flash (High)", "gemini-3.8-flash-high"),

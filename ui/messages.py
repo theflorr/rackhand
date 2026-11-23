@@ -54,6 +54,12 @@ class ChatMessage(ABC):
             except Exception:
                 pass
 
+    def clone(self) -> ChatMessage:
+        import copy
+        new_msg = copy.copy(self)
+        new_msg.widget = None
+        return new_msg
+
 
 class GenericMessage(ChatMessage):
     def __init__(self, content: Any, css_class: str = ""):
@@ -62,6 +68,11 @@ class GenericMessage(ChatMessage):
 
     def render(self) -> Any:
         return self.content
+
+    def clone(self) -> GenericMessage:
+        msg = GenericMessage(self.content, self.css_class)
+        msg.created_at = self.created_at
+        return msg
 
 
 class UserMessage(ChatMessage):
@@ -75,6 +86,11 @@ class UserMessage(ChatMessage):
         t.append(f"  {self.created_at.strftime('%H:%M')}\n", style="dim")
         t.append(self.text, style="white")
         return t
+
+    def clone(self) -> UserMessage:
+        msg = UserMessage(self.text)
+        msg.created_at = self.created_at
+        return msg
 
 
 class AssistantMessage(ChatMessage):
@@ -92,6 +108,37 @@ class AssistantMessage(ChatMessage):
             box=box.ROUNDED,
             padding=(0, 1),
         )
+
+    def clone(self) -> AssistantMessage:
+        msg = AssistantMessage(self.markdown)
+        msg.created_at = self.created_at
+        return msg
+
+
+class CompactionCheckpointMessage(ChatMessage):
+    def __init__(self, summary: str = "", tokens_compacted: int = 0):
+        super().__init__(css_class="assistant")
+        self.summary = summary
+        self.tokens_compacted = tokens_compacted
+
+    def render(self) -> Panel:
+        body = Markdown(self.summary) if self.summary.strip() else Text("No checkpoint summary generated.", style="dim")
+        sub_text = "Session Checkpoint · Prior turns compacted"
+        return Panel(
+            body,
+            title="checkpoint: session compacted",
+            subtitle=sub_text,
+            title_align="left",
+            subtitle_align="right",
+            border_style="#0284c7",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+
+    def clone(self) -> CompactionCheckpointMessage:
+        msg = CompactionCheckpointMessage(self.summary, self.tokens_compacted)
+        msg.created_at = self.created_at
+        return msg
 
 
 @dataclass
@@ -320,6 +367,13 @@ class ToolBundleMessage(ChatMessage):
                 return True
         return False
 
+    def clone(self) -> ToolBundleMessage:
+        import copy
+        new_calls = [copy.copy(c) for c in self.calls]
+        msg = ToolBundleMessage(calls=new_calls, expanded=self.expanded)
+        msg.created_at = self.created_at
+        return msg
+
     def create_widget(self) -> Widget:
         w = ToolBundleWidget(self)
         self.widget = w
@@ -393,6 +447,19 @@ class ProposalVerdictMessage(ChatMessage):
         self.decision = decision
 
     def render(self) -> Text:
-        verdict = pill("APPROVED", "ok") if self.decision.approved else pill("REJECTED", "err")
+        if self.decision.approved and self.decision.note and "Autonomous" in self.decision.note:
+            verdict = pill("AUTONOMOUS", "ok")
+        elif self.decision.approved:
+            verdict = pill("APPROVED", "ok")
+        else:
+            verdict = pill("REJECTED", "err")
         edited = "  (edited)" if self.decision.approved and self.decision.commands != self.change.commands else ""
-        return Text.assemble(verdict, f"  {self.change.title}", (edited, "dim"))
+        res = Text.assemble(verdict, f"  {self.change.title}", (edited, "dim"))
+        if self.decision.note:
+            res.append(f"\n  › {self.decision.note}", style="dim #888888")
+        return res
+
+    def clone(self) -> ProposalVerdictMessage:
+        msg = ProposalVerdictMessage(self.change, self.decision)
+        msg.created_at = self.created_at
+        return msg

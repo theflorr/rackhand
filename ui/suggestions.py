@@ -34,31 +34,50 @@ def get_suggestions(raw_text: str, app: Any = None) -> list[CommandSuggestion]:
 
     # 1. Slash commands & subarguments
     if val.startswith("/"):
-        if val.startswith("/agent "):
-            arg = val[7:].strip().lower()
-            for ag in AGENTS:
-                if not arg or arg in ag.id.lower() or arg in ag.name.lower():
+        if val.startswith("/agent"):
+            return [CommandSuggestion("/agent", "/agent", "Expand specialist agent selector dropdown", completion="/agent")]
+
+        if val.startswith(("/effort", "/variant", "/thinking")):
+            parts = trimmed.split(maxsplit=1)
+            prefix = parts[0].lower()
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            effort_opts = [
+                ("off", "Off / Minimal", "Standard inference with no extended reasoning tokens"),
+                ("low", "Low", "Light reasoning budget for fast diagnostics"),
+                ("medium", "Medium (Default)", "Balanced reasoning effort for network tasks"),
+                ("high", "High", "Deep reasoning budget for complex routing & debugging"),
+                ("max", "Max / Extra High", "Maximum reasoning depth for exhaustive verification"),
+            ]
+            matches = []
+            for opt_key, opt_label, opt_desc in effort_opts:
+                if not sub or opt_key.startswith(sub):
                     matches.append(CommandSuggestion(
-                        value=f"/agent {ag.id}",
-                        display=f"/agent {ag.id}",
-                        description=ag.name,
-                        category="Agent",
-                        completion=f"/agent {ag.id}",
+                        value=f"{prefix} {opt_key}",
+                        display=f"{prefix} {opt_key}",
+                        description=f"{opt_label} - {opt_desc}",
+                        completion=f"{prefix} {opt_key}",
                     ))
-            if not arg or arg in "list":
-                matches.append(CommandSuggestion(
-                    value="/agent list",
-                    display="/agent list",
-                    description="List all available specialist agents and features",
-                    category="Agent",
-                    completion="/agent list",
+            if not sub:
+                matches.insert(0, CommandSuggestion(
+                    value=prefix,
+                    display=prefix,
+                    description="Open interactive reasoning effort / model variant picker",
+                    completion=prefix,
                 ))
             return matches
 
         # Top-level slash commands
         all_cmds = [
-            CommandSuggestion("/agent", "/agent [name]", "Switch or inspect active specialist agent", completion="/agent "),
-            CommandSuggestion("/agent list", "/agent list", "List all available specialist agents", completion="/agent list"),
+            CommandSuggestion("/plan", "/plan", "Enter plan mode (device discovery, read-only inspection, task planning)", completion="/plan"),
+            CommandSuggestion("/build", "/build", "Exit plan mode to normal execution (apply changes & run tasks)", completion="/build"),
+            CommandSuggestion("/compact", "/compact", "Summarize conversation checkpoint, clear history, and continue", completion="/compact"),
+            CommandSuggestion("/fork", "/fork", "Clone conversation and open it in a new session", completion="/fork"),
+            CommandSuggestion("/rename", "/rename <title>", "Rename the current session title", completion="/rename "),
+            CommandSuggestion("/effort", "/effort [level]", "Choose model reasoning effort / thinking variant (off, low, medium, high, max)", completion="/effort"),
+            CommandSuggestion("/variant", "/variant [level]", "Alias for /effort (choose model variant)", completion="/variant"),
+            CommandSuggestion("/thinking", "/thinking [level]", "Alias for /effort (set reasoning tokens budget)", completion="/thinking"),
+            CommandSuggestion("/agent", "/agent", "Expand specialist agent selector dropdown", completion="/agent"),
+            CommandSuggestion("/usage", "/usage", "Show provider usage, rate limits, and rolling token windows", completion="/usage"),
             CommandSuggestion("/settings", "/settings", "Open settings and guardrails configuration", completion="/settings"),
             CommandSuggestion("/clear", "/clear", "Clear current session chat history", completion="/clear"),
             CommandSuggestion("/help", "/help", "Show all available commands and shortcuts", completion="/help"),

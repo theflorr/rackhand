@@ -111,72 +111,12 @@ def fmt_bytes_prompt(chunk: ConsoleChunk) -> Text:
     return highlight_config(clean)
 
 
-def generate_session_title(prompt: str, session: Optional[DeviceSession] = None) -> str:
-    """Generate a clean, technical 2-4 word session title from the initial prompt."""
-    p = prompt.strip()
-    p_low = p.lower()
-
-    if any(w in p_low for w in ("audit", "harden", "posture", "baseline")):
-        return "Config & Security Audit"
-    if any(w in p_low for w in ("iface", "interface", "port status", "health")):
-        return "Interface Telemetry"
-    if any(w in p_low for w in ("vlan", "trunk", "802.1q")):
-        return "VLAN & Trunk Analysis"
-    if any(w in p_low for w in ("cdp", "lldp", "topology", "neighbor")):
-        return "CDP Topology Discovery"
-    if any(w in p_low for w in ("backup", "snapshot", "archive", "copy run")):
-        return "Running-Config Snapshot"
-    if "bgp" in p_low:
-        return "BGP Routing Analysis"
-    if "ospf" in p_low:
-        return "OSPF Adjacency Check"
-    if any(w in p_low for w in ("route", "routing", "ip route")):
-        return "Route Table Diagnostic"
-    if any(w in p_low for w in ("acl", "access-list", "firewall", "policy")):
-        return "Access Control Audit"
-    if "stp" in p_low or "spanning" in p_low:
-        return "Spanning Tree Check"
-    if any(w in p_low for w in ("ping", "traceroute", "reachab")):
-        return "Reachability Diagnostic"
-    if "version" in p_low or "uptime" in p_low:
-        return "System Version Audit"
-    if "inventory" in p_low or "serial" in p_low:
-        return "Hardware Inventory Scan"
-    if "poe" in p_low or "power" in p_low:
-        return "PoE Budget Telemetry"
-    if "log" in p_low or "syslog" in p_low:
-        return "Syslog Buffer Review"
-    if "diff" in p_low or "compare" in p_low:
-        return "Config Diff Review"
-
-    cleaned = re.sub(
-        r"^(can you|please|could you|i want to|show me|check|tell me about|what is|find|inspect|look at|run)\s+",
-        "",
-        p_low,
-        flags=re.IGNORECASE,
-    ).strip()
-    cleaned = re.sub(r"[?!.,:;\"'`]", "", cleaned).strip()
-
-    words = cleaned.split()
-    if words:
-        title_words = [w.capitalize() for w in words[:4]]
-        candidate = " ".join(title_words)
-        if len(candidate) > 28:
-            candidate = candidate[:25].rstrip() + "..."
-        return candidate
-
-    host = session.hostname if session and session.hostname else "Device"
-    return f"{host} Diagnostic"
-
-
-
-
 APP_CSS = """
 Screen { background: #0a0a0a; color: #d0d0d0; }
 ModalScreen { align: center middle; background: #000000 75%; }
 
-.dialog { width: 90%; height: 84%; max-width: 120; max-height: 86%; background: #111111; border: round #333333; padding: 1 2; }
-.dialog.small { width: 60; max-width: 90%; height: 80%; max-height: 84%; border: round #333333; }
+.dialog { width: 90%; height: 95%; max-width: 130; max-height: 96%; background: #111111; border: round #333333; padding: 1 2; }
+.dialog.small { width: 90%; max-width: 120; height: 95%; max-height: 96%; border: round #333333; }
 .title { height: 1; margin-bottom: 1; color: #e0e0e0; text-style: bold; }
 .section { color: #666666; text-style: bold; margin: 1 0 0 0; }
 .buttons { height: 1; align-horizontal: right; margin-top: 1; }
@@ -331,6 +271,14 @@ Label { color: #666666; }
 #agent-detail-desc { height: auto; color: #d0d0d0; margin-bottom: 1; }
 #agent-detail-body { height: 1fr; color: #888888; }
 
+#effort-dialog { width: 88; height: 26; }
+#effort-modal-body { height: 1fr; }
+#effort-list-col { width: 34; height: 100%; border-right: solid #1c1c1c; padding: 0 1 0 0; }
+#effort-picker-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
+#effort-details-col { width: 1fr; height: 100%; padding-left: 2; }
+#effort-detail-title { height: auto; text-style: bold; margin-bottom: 1; }
+#effort-detail-desc { height: auto; color: #d0d0d0; }
+
 /* transport tabs */
 #transport { height: auto; margin-bottom: 1; }
 #transport ContentSwitcher { height: auto; }
@@ -366,12 +314,6 @@ Label { color: #666666; }
 #ser-refresh, #p-fetch { width: 12; margin-left: 1; height: 1; }
 #p-result { height: auto; min-height: 0; }
 
-/* settings dialog */
-#settings.small { width: 56; max-width: 90%; height: auto; max-height: 84%; }
-#settings-scroll { height: 1fr; margin-bottom: 1; }
-#settings .row { height: auto; margin-bottom: 0; }
-#settings .col { width: 1fr; height: auto; margin-right: 1; }
-
 /* providers */
 #prov-body { height: 1fr; }
 #prov-list-col { width: 30; height: 100%; border-right: solid #1c1c1c; padding: 0 1 0 0; }
@@ -388,6 +330,14 @@ Label { color: #666666; }
 #agent-detail-title { height: auto; text-style: bold; margin-bottom: 1; }
 #agent-detail-desc { height: auto; color: #d0d0d0; margin-bottom: 1; }
 #agent-detail-body { height: 1fr; color: #888888; }
+
+#effort-dialog { width: 88; height: 26; }
+#effort-modal-body { height: 1fr; }
+#effort-list-col { width: 34; height: 100%; border-right: solid #1c1c1c; padding: 0 1 0 0; }
+#effort-picker-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
+#effort-details-col { width: 1fr; height: 100%; padding-left: 2; }
+#effort-detail-title { height: auto; text-style: bold; margin-bottom: 1; }
+#effort-detail-desc { height: auto; color: #d0d0d0; }
 #p-head { height: auto; margin-bottom: 0; }
 #p-note { height: auto; margin-bottom: 1; }
 #p-detected-row { height: auto; margin-top: 1; margin-bottom: 1; padding: 0 1; background: #141414; border-left: solid #3b82f6; align-vertical: middle; }
@@ -405,19 +355,21 @@ Label { color: #666666; }
 
 /* ── workspace settings tab & modal ─────────────────────────────────────────── */
 #tab-settings {
-    height: 1fr;
+    height: 100%;
+    width: 100%;
     padding: 1 3;
     background: #0a0a0a;
 }
 
 #tab-settings-scroll {
-    max-width: 96;
-    height: 1fr;
-    padding-bottom: 2;
+    width: 100%;
+    height: 100%;
+    padding-bottom: 1;
 }
 
 #settings-hdr {
     height: auto;
+    width: 100%;
     margin-bottom: 1;
     padding-bottom: 1;
     border-bottom: solid #222222;
@@ -436,54 +388,101 @@ Label { color: #666666; }
 
 .settings-card {
     height: auto;
+    width: 100%;
     background: #111111;
-    border: round #222222;
+    border: round #262626;
     padding: 1 2;
     margin-bottom: 1;
 }
 
 .settings-card:hover {
-    border: round #333333;
+    border: round #383838;
 }
 
 .settings-card-header {
     height: auto;
     margin-bottom: 1;
+    padding-bottom: 1;
+    border-bottom: solid #1c1c1c;
 }
 
 .settings-card-title {
-    color: #eeeeee;
+    color: #ffffff;
     text-style: bold;
     height: 1;
 }
 
 .settings-card-desc {
-    color: #666666;
+    color: #777777;
     height: auto;
 }
 
-.settings-field-group {
+.settings-item {
     height: auto;
     margin-top: 1;
+    margin-bottom: 1;
+}
+
+.settings-item:first-of-type {
+    margin-top: 0;
 }
 
 .settings-field-lbl {
-    color: #cccccc;
+    color: #e2e2e2;
     text-style: bold;
     height: 1;
-    margin-top: 1;
+    margin-bottom: 0;
 }
 
 .settings-field-help {
-    color: #555555;
+    color: #6a6a6a;
     height: auto;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Checkbox item: Indents help text to align directly under checkbox text! */
+.settings-checkbox-item {
+    height: auto;
+    margin-top: 1;
     margin-bottom: 1;
+}
+
+.settings-checkbox-item Checkbox {
+    height: auto;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+}
+
+.settings-checkbox-item Checkbox:focus {
+    text-style: bold;
+}
+
+.settings-checkbox-item .settings-field-help {
+    color: #6a6a6a;
+    margin-left: 4;
+    margin-top: 0;
+    margin-bottom: 0;
+    height: auto;
+}
+
+.settings-card Select {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.settings-card Input {
+    margin-top: 0;
+    margin-bottom: 0;
 }
 
 .settings-row {
     height: auto;
     layout: horizontal;
     margin-top: 1;
+    margin-bottom: 0;
 }
 
 .settings-col {
@@ -492,25 +491,91 @@ Label { color: #666666; }
     margin-right: 2;
 }
 
+.settings-col:last-child {
+    margin-right: 0;
+}
+
+.settings-col .settings-field-help {
+    margin-top: 0;
+}
+
 .settings-btn-row {
     height: auto;
     layout: horizontal;
     margin-top: 1;
-    margin-bottom: 2;
+    margin-bottom: 1;
 }
 
 .settings-btn-row Button {
     margin-right: 1;
 }
 
+#settings,
 #settings.small {
-    width: 82;
-    max-width: 95%;
-    height: auto;
-    max-height: 88%;
+    width: 92%;
+    max-width: 130;
+    height: 95%;
+    max-height: 96%;
     background: #111111;
     border: round #2e2e2e;
     padding: 1 2;
+}
+
+#settings-scroll {
+    height: 1fr;
+    padding-right: 1;
+    margin-bottom: 1;
+}
+
+/* ── usage & limits modal ───────────────────────────────────────────────── */
+#usage-dialog {
+    width: 92%;
+    max-width: 126;
+    height: 95%;
+    max-height: 96%;
+    background: #111111;
+    border: round #2e2e2e;
+    padding: 1 2;
+}
+
+#usage-hdr {
+    height: auto;
+    width: 100%;
+    margin-bottom: 1;
+    padding-bottom: 1;
+    border-bottom: solid #222222;
+}
+
+#usage-title {
+    color: #ffffff;
+    text-style: bold;
+    height: 1;
+}
+
+#usage-subtitle {
+    color: #888888;
+    height: 1;
+}
+
+#usage-scroll {
+    height: 1fr;
+    padding-right: 1;
+    margin-bottom: 1;
+}
+
+#usage-context-content {
+    height: auto;
+    padding-top: 1;
+}
+
+#usage-windows-content {
+    height: auto;
+    padding-top: 1;
+}
+
+#usage-api-content {
+    height: auto;
+    padding-top: 1;
 }
 
 /* ── approval modal redesign ────────────────────────────────────────────── */
@@ -560,6 +625,26 @@ Label { color: #666666; }
 
 #ap-note-text {
     color: #cccccc;
+    height: auto;
+}
+
+#ap-rollback-box {
+    background: #141111;
+    border: round #3d2424;
+    padding: 1 1;
+    margin-bottom: 1;
+    height: auto;
+}
+
+#ap-rollback-lbl {
+    color: #cc7777;
+    text-style: bold;
+    height: 1;
+    margin-bottom: 0;
+}
+
+#ap-rollback-text {
+    color: #ddaaaa;
     height: auto;
 }
 
@@ -632,9 +717,9 @@ Label { color: #666666; }
 
 /* sidebar - flush left, no extra margin */
 #sidebar {
-    width: 25;
+    width: 27;
     height: 100%;
-    background: #0d0d0d;
+    background: #0c0c0f;
     padding: 0 1;
 }
 
@@ -653,30 +738,37 @@ Label { color: #666666; }
 }
 #sidebar-banner {
     height: auto;
-    margin: 1 0 0 0;
-    padding: 0 1;
+    margin: 1 0 1 0;
+    padding: 0 0 1 0;
+    border-bottom: solid #1c1c24;
+}
+.sidebar-header {
+    height: 1;
+    margin-top: 1;
+    margin-bottom: 0;
+    padding: 0;
 }
 #sidebar .section {
-    color: #555555;
+    color: #71717a;
     text-style: bold;
     height: 1;
     margin-top: 1;
     margin-bottom: 0;
-    padding: 0 1;
+    padding: 0;
 }
 #device-list {
     height: auto;
     max-height: 6;
-    background: #0d0d0d;
-    border: none;
+    background: #111116;
+    border: solid #1c1c24;
     padding: 0;
     margin: 0;
 }
 #session-list {
     height: auto;
     max-height: 8;
-    background: #0d0d0d;
-    border: none;
+    background: #111116;
+    border: solid #1c1c24;
     padding: 0;
     margin: 0;
     scrollbar-size: 0 0;
@@ -685,34 +777,54 @@ Label { color: #666666; }
     height: 1;
     width: 100%;
     layout: horizontal;
-    padding: 0;
+    padding: 0 1;
     background: transparent;
 }
 .session-row:hover,
 .session-row.hovered {
-    background: #141414;
+    background: #181824;
 }
 .session-row.active {
-    background: #171717;
+    background: #1e1e2e;
+    border-left: solid #38bdf8;
 }
 .session-row.active:hover,
 .session-row.active.hovered {
-    background: #1c1c1c;
+    background: #242436;
 }
 .session-row .session-title {
     width: 1fr;
     height: 1;
-    color: #777777;
+    color: #71717a;
 }
 .session-row.active .session-title {
     color: #ffffff;
+    text-style: bold;
 }
 .sidebar-btn-row {
     width: 100%;
     height: auto;
-    align-horizontal: center;
-    margin-top: 1;
+    margin-top: 0;
     margin-bottom: 0;
+}
+.sidebar-action-btn {
+    width: 100%;
+    height: 1;
+    margin: 1 0;
+    padding: 0 1;
+    background: #181822;
+    color: #a1a1aa;
+    border: none;
+    text-align: center;
+    text-style: bold;
+}
+.sidebar-action-btn:hover {
+    background: #262636;
+    color: #ffffff;
+}
+.sidebar-action-btn:focus {
+    background: #0284c7;
+    color: #ffffff;
 }
 #sidebar Button {
     width: auto;
@@ -720,7 +832,7 @@ Label { color: #666666; }
     margin: 0;
     padding: 0 1;
     background: transparent;
-    color: #555555;
+    color: #71717a;
     border: none;
 }
 #sidebar Button:hover {
@@ -922,7 +1034,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 
 #agent-select {
-    width: 28;
+    width: 30;
     height: 1;
     border: none;
     background: #141722;
@@ -943,6 +1055,11 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 #agent-select:focus SelectCurrent {
     background: #1c2234;
     color: #c0d4f0;
+}
+#agent-select SelectOverlay {
+    width: 34;
+    height: auto;
+    max-height: 14;
 }
 
 /* ── console tab & remade header ────────────────────────────────────────── */

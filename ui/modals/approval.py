@@ -42,6 +42,11 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
                     yield Label("WHY & WHAT", id="ap-note-lbl")
                     yield Static(c.rationale.strip(), id="ap-note-text")
 
+            if c.rollback:
+                with Vertical(id="ap-rollback-box"):
+                    yield Label(f"SUGGESTED ROLLBACK ({len(c.rollback)})", id="ap-rollback-lbl")
+                    yield Static("\n".join(c.rollback), id="ap-rollback-text")
+
             yield Label(f"COMMANDS TO APPLY ({len(c.commands)})", id="ap-cmds-lbl")
             yield TextArea("\n".join(c.commands), id="ap-cmds")
 

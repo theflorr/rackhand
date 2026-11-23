@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import random
@@ -25,6 +26,8 @@ except ImportError:
     paramiko = None
 
 from llm_engine import RealLLMEngine
+
+logger = logging.getLogger("rackhand.backend")
 
 from models import (
     AgentDone,
@@ -126,6 +129,9 @@ class Backend(ABC):
     async def list_models(self, cfg: ProviderConfig | str) -> list[str]: ...
 
     @abstractmethod
+    async def generate_session_title(self, provider: ProviderConfig, prompt: str) -> Optional[str]: ...
+
+    @abstractmethod
     async def detect_subscriptions(self) -> list[Any]: ...
 
     @abstractmethod
@@ -135,7 +141,8 @@ class Backend(ABC):
     @abstractmethod
     def run_turn(self, prompt: str, session: DeviceSession, provider: ProviderConfig,
                  settings: Settings, agent: Optional[Any] = None,
-                 chat_session_id: Optional[str] = None) -> AsyncIterator[AgentEvent]:
+                 chat_session_id: Optional[str] = None,
+                 is_plan_mode: bool = False) -> AsyncIterator[AgentEvent]:
         """Async generator. Yield AgentText as it streams, AgentToolCall/Result when the
         model runs commands, AgentProposal when a change needs approval (then the generator
         must wait until resolve_approval is called), and finally AgentDone."""
@@ -145,6 +152,30 @@ class Backend(ABC):
 
     @abstractmethod
     async def cancel_turn(self) -> None: ...
+
+    @abstractmethod
+    async def compact_session(
+        self,
+        session_id: str,
+        provider: ProviderConfig,
+        session: Optional[DeviceSession] = None,
+        agent: Optional[Any] = None,
+        is_plan_mode: bool = False,
+        fallback_transcript: str = "",
+    ) -> str:
+        """Compact conversation history into a structured checkpoint summary and reset memory starting point."""
+
+    @abstractmethod
+    def clear_session_memory(self, session_id: str) -> None:
+        """Clear context memory for the given session."""
+
+    @abstractmethod
+    def clone_session_memory(self, source_session_id: str, target_session_id: str) -> None:
+        """Clone conversation context memory from one session to another."""
+
+    @abstractmethod
+    def get_session_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Get raw messages stored in context memory for the session."""
 
     # ---- settings ---------------------------------------------------------------
     @abstractmethod
@@ -489,23 +520,10 @@ class RealBackend(Backend):
         self._queues: dict[str, asyncio.Queue] = {}
         self._approvals: dict[str, asyncio.Future] = {}
         self._llm_engine = RealLLMEngine()
+        from usage_tracker import UsageTracker
+        self.usage_tracker = UsageTracker.get_instance()
 
-        self._providers: dict[str, ProviderConfig] = {
-            "anthropic": ProviderConfig(
-                key="anthropic",
-                name="Anthropic",
-                spec_id="anthropic",
-                scheme=ApiScheme.ANTHROPIC,
-                base_url="https://api.anthropic.com",
-                api_key="",
-                auth=AuthStyle.X_API_KEY,
-                model="claude-3-5-sonnet-20241022",
-                context_window=200000,
-                max_output=8192,
-                supports_tools=True,
-                supports_streaming=True,
-            )
-        }
+        self._providers: dict[str, ProviderConfig] = {}
         if self._providers_file.exists():
             try:
                 pdata = json.loads(self._providers_file.read_text(encoding="utf-8"))
@@ -902,19 +920,16 @@ class RealBackend(Backend):
             except Exception as e:
                 return TestResult(False, f"Failed to invoke AGY CLI: {e}", 0, False)
 
-        if cfg.base_url and cfg.api_key and "local" not in cfg.base_url:
+        if (cfg.base_url or cfg.scheme == ApiScheme.ANTHROPIC) and cfg.api_key and "local" not in (cfg.base_url or ""):
             start_t = time.time()
             try:
                 import httpx
-                url = cfg.base_url.rstrip("/")
-                if not url.endswith("/chat/completions") and not url.endswith("/v1"):
-                    url = f"{url}/chat/completions"
-                elif url.endswith("/v1"):
-                    url = f"{url}/chat/completions"
-                headers = {"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"}
-                payload = {"model": cfg.model or "meta-llama/llama-3.3-70b-instruct", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}
+                from llm_engine import build_llm_request
+                endpoint, headers, payload, is_anthropic = build_llm_request(
+                    cfg, [{"role": "user", "content": "hi"}], tools=[], max_tokens=5
+                )
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
+                    resp = await client.post(endpoint, headers=headers, json=payload)
                     dur_ms = int((time.time() - start_t) * 1000)
                     if resp.status_code == 200:
                         return TestResult(True, f"Connected to {cfg.name} ({cfg.model})", dur_ms, cfg.supports_tools)
@@ -927,6 +942,35 @@ class RealBackend(Backend):
         if cfg.auth is not AuthStyle.NONE and not cfg.api_key and "localhost" not in cfg.base_url:
             return TestResult(False, "401 Unauthorized: missing API key", 120)
         return TestResult(True, "Reachable, authenticated", 140, cfg.supports_tools)
+
+    async def generate_session_title(self, provider: ProviderConfig, prompt: str) -> Optional[str]:
+        """Generate a concise, professional 2-4 word session title via active AI provider."""
+        if not prompt or not prompt.strip():
+            return None
+        system_prompt = (
+            "You are a network engineering assistant. Generate a concise, professional 2 to 4 word session title "
+            "summarizing the operator's prompt. Output ONLY the title text, nothing else. "
+            "No quotes, no explanation, no trailing punctuation."
+        )
+        try:
+            raw_title = await self._llm_engine.call_llm_stateless(
+                provider=provider,
+                system_prompt=system_prompt,
+                user_prompt=prompt.strip(),
+                temperature=0.2,
+                max_tokens=20,
+            )
+            if not raw_title:
+                return None
+            first_line = raw_title.strip().splitlines()[0].strip()
+            clean = re.sub(r'^(?:\*{1,2}|#+)?\s*(?:session\s+)?title\s*:\s*(?:\*{1,2})?\s*', '', first_line, flags=re.IGNORECASE)
+            clean = clean.strip('"`\'*#._- ')
+            if len(clean) > 36:
+                clean = clean[:33].rstrip() + "..."
+            return clean if clean else None
+        except Exception as exc:
+            logger.debug("AI session title generation failed: %s", exc)
+            return None
 
     async def list_models(self, cfg: ProviderConfig | str) -> list[str]:
         if isinstance(cfg, str):
@@ -1000,6 +1044,7 @@ class RealBackend(Backend):
         settings: Settings,
         agent: Optional[Any] = None,
         chat_session_id: Optional[str] = None,
+        is_plan_mode: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         if agent is None:
             from agents import resolve_agent
@@ -1027,6 +1072,7 @@ class RealBackend(Backend):
             run_command_fn=_run_cmd_fn,
             propose_change_fn=_propose_fn,
             session_id=sess_id,
+            is_plan_mode=is_plan_mode,
         ):
             yield ev
 
@@ -1040,6 +1086,33 @@ class RealBackend(Backend):
             if not fut.done():
                 fut.set_result(ApprovalDecision(False))
         self._approvals.clear()
+
+    async def compact_session(
+        self,
+        session_id: str,
+        provider: ProviderConfig,
+        session: Optional[DeviceSession] = None,
+        agent: Optional[Any] = None,
+        is_plan_mode: bool = False,
+        fallback_transcript: str = "",
+    ) -> str:
+        return await self._llm_engine.compact_session(
+            session_id=session_id,
+            provider=provider,
+            session=session,
+            agent_spec=agent,
+            is_plan_mode=is_plan_mode,
+            fallback_transcript=fallback_transcript,
+        )
+
+    def clear_session_memory(self, session_id: str) -> None:
+        self._llm_engine.clear_session(session_id)
+
+    def clone_session_memory(self, source_session_id: str, target_session_id: str) -> None:
+        self._llm_engine.clone_session(source_session_id, target_session_id)
+
+    def get_session_messages(self, session_id: str) -> list[dict[str, Any]]:
+        return self._llm_engine.memory.get_messages(session_id)
 
     # ---- settings ---------------------------------------------------------------
 

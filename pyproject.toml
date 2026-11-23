@@ -26,7 +26,10 @@ py-modules = [
     "backend",
     "llm_engine",
     "models",
+    "reviewer",
+    "snapshots",
     "subscription_detector",
+    "usage_tracker",
 ]
 
 [tool.setuptools.packages.find]

@@ -10,6 +10,7 @@ from models import (
     ProviderConfig,
     Risk,
     Settings,
+    Snapshot,
     Transport,
     Vendor,
 )
@@ -29,4 +30,5 @@ __all__ = [
     "ApprovalDecision",
     "ProviderConfig",
     "Settings",
+    "Snapshot",
 ]

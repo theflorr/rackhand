@@ -750,14 +750,89 @@ AGENTS: list[AgentSpec] = [
     ),
 ]
 
-AGENT_INDEX: dict[str, AgentSpec] = {a.id: a for a in AGENTS}
+PLAN_MODE_PROTOCOL = """
+
+# ==============================================================================
+# PLAN MODE PROTOCOL (MANDATORY & ENFORCED)
+# ==============================================================================
+You are currently operating in PLAN MODE. You are an expert network architect and planner.
+In Plan Mode, your objective is to discover hardware, interview the operator, gather complete requirements, perform deep read-only inspection, and construct an airtight implementation plan BEFORE any changes occur.
+
+### STRICT GUARDRAIL: ZERO MUTATION ALLOWED
+1. You are strictly in READ-ONLY mode.
+2. NEVER execute or propose configuration changes (`configure terminal`, `config system`, `write memory`, `reload`, `delete`, `set ...`, etc.).
+3. ONLY execute safe read-only inspection commands (`show ...`, `get ...`, `display ...`).
+4. Any change commands must strictly be documented in your written plan for the user to execute later in Build Mode.
+
+### THE 4-PHASE PLANNING WORKFLOW:
+1. **Phase 1: Hardware Identification & CLI Access Verification**:
+   - Check connected hardware: verify CLI reachability, identify hardware model, OS version, privilege level, and operational state using safe read-only diagnostics (e.g. `show version`, `get system status`).
+   - If no device is connected, inform the operator and ask for the target device topology and hardware model.
+   - Immediately prompt the operator with structured questions to discover what task or setup needs to be done.
+
+2. **Phase 2: Task Scoping & Requirement Gathering**:
+   - Ask clarifying discovery questions to understand:
+     - What specific setup, change, or troubleshooting task is requested?
+     - What are the IP addressing schemes, subnets, VLAN IDs, interfaces, or protocol requirements?
+     - Are there maintenance window constraints or redundancy/failover considerations?
+
+3. **Phase 3: Deep Read-Only Inspection**:
+   - Once the task is defined, execute targeted read-only commands to inspect active configuration, interface assignments, routing tables, and neighbor adjacencies.
+   - Ask follow-up questions to resolve any ambiguities or discrepancies between requested design and active hardware state.
+
+4. **Phase 4: Comprehensive Implementation & Rollback Plan**:
+   - Deliver a formal, structured plan formatted with:
+     - **Objective & Scope Summary**
+     - **Pre-Change Verification**: Exact read-only commands and expected healthy baseline.
+     - **Step-by-Step Configuration**: Exact CLI commands ready to execute.
+     - **Post-Change Verification**: Exact telemetry commands and expected validation outputs.
+     - **Rollback / Backout Procedure**: Exact commands to revert changes if verification fails.
+   - Conclude by instructing the operator:
+     `Plan complete. Type /build to exit plan mode and execute this plan, or save it for later.`
+"""
+
+PLAN_AGENTS: list[AgentSpec] = [
+    AgentSpec(
+        id=f"{a.id}-plan",
+        name=f"{a.name} (Plan Mode)",
+        short_name=f"Plan ({a.short_name})",
+        vendor=a.vendor,
+        badge=f"[PLAN·{a.badge.strip('[]')}]",
+        description=f"Plan mode for {a.name}: identifies devices, scopes tasks, runs read-only inspection, and formulates implementation plans.",
+        system_prompt=a.system_prompt + PLAN_MODE_PROTOCOL,
+        aliases=[f"{al}-plan" for al in a.aliases] + [f"plan-{a.id}"],
+    )
+    for a in AGENTS
+]
+
+ALL_AGENTS: list[AgentSpec] = AGENTS + PLAN_AGENTS
+AGENT_INDEX: dict[str, AgentSpec] = {a.id: a for a in ALL_AGENTS}
 
 # Quick lookup by alias
 _ALIAS_MAP: dict[str, str] = {}
-for _a in AGENTS:
+for _a in ALL_AGENTS:
     _ALIAS_MAP[_a.id.lower()] = _a.id
     for _al in _a.aliases:
         _ALIAS_MAP[_al.lower()] = _a.id
+
+
+def to_plan_agent(agent_id: str) -> str:
+    """Map an agent ID to its plan mode counterpart."""
+    clean = (agent_id or "auto").lower().replace("-plan", "").replace("plan-", "")
+    target = f"{clean}-plan"
+    return target if target in AGENT_INDEX else "auto-plan"
+
+
+def to_build_agent(agent_id: str) -> str:
+    """Map a plan mode agent ID back to its standard build counterpart."""
+    clean = (agent_id or "auto").lower().replace("-plan", "").replace("plan-", "")
+    return clean if clean in AGENT_INDEX else "auto"
+
+
+def is_plan_agent(agent_id: str) -> bool:
+    """Check if an agent ID is a plan mode agent."""
+    clean = (agent_id or "").lower()
+    return clean.endswith("-plan") or clean.startswith("plan-")
 
 
 def get_agent(agent_id: str) -> Optional[AgentSpec]:
@@ -770,10 +845,14 @@ def get_agent(agent_id: str) -> Optional[AgentSpec]:
 
 def resolve_agent(agent_id: Optional[str], session: Optional[DeviceSession] = None) -> AgentSpec:
     """Resolve the effective agent based on selection and optional device session."""
-    if agent_id and agent_id != "auto":
+    is_plan = is_plan_agent(agent_id or "")
+
+    if agent_id and agent_id not in ("auto", "auto-plan"):
         found = get_agent(agent_id)
         if found:
             return found
+
+    resolved: AgentSpec = AGENT_INDEX["auto"]
 
     # Auto-detection logic based on session
     if session is not None:
@@ -783,30 +862,39 @@ def resolve_agent(agent_id: Optional[str], session: Optional[DeviceSession] = No
         # Fortinet hardware family detection
         if "forti" in vendor_val or "forti" in hostname:
             if "fsw" in hostname or "switch" in hostname:
-                return AGENT_INDEX["fortiswitch"]
-            if "fap" in hostname or "ap" in hostname:
-                return AGENT_INDEX["fortiap"]
-            if "fmg" in hostname or "manager" in hostname:
-                return AGENT_INDEX["fortimanager"]
-            return AGENT_INDEX["fortigate"]
+                resolved = AGENT_INDEX["fortiswitch"]
+            elif "fap" in hostname or "ap" in hostname:
+                resolved = AGENT_INDEX["fortiap"]
+            elif "fmg" in hostname or "manager" in hostname:
+                resolved = AGENT_INDEX["fortimanager"]
+            else:
+                resolved = AGENT_INDEX["fortigate"]
 
         # Cisco hardware family detection
-        if "xr" in vendor_val or "xr" in hostname:
-            return AGENT_INDEX["cisco-ios-xr"]
-        if "nxos" in vendor_val or "nexus" in hostname or "n9k" in hostname:
-            return AGENT_INDEX["cisco-nxos"]
-        if "asa" in vendor_val or "asa" in hostname:
-            return AGENT_INDEX["cisco-asa"]
-        if "ftd" in vendor_val or "firepower" in hostname:
-            return AGENT_INDEX["cisco-ftd"]
-        if "xe" in vendor_val or any(m in hostname for m in ("cat9", "9300", "9500", "c8300", "asr1")):
-            return AGENT_INDEX["cisco-ios-xe"]
-        if "cisco" in vendor_val or "ios" in vendor_val:
-            return AGENT_INDEX["cisco-ios"]
+        elif "xr" in vendor_val or "xr" in hostname:
+            resolved = AGENT_INDEX["cisco-ios-xr"]
+        elif "nxos" in vendor_val or "nexus" in hostname or "n9k" in hostname:
+            resolved = AGENT_INDEX["cisco-nxos"]
+        elif "asa" in vendor_val or "asa" in hostname:
+            resolved = AGENT_INDEX["cisco-asa"]
+        elif "ftd" in vendor_val or "firepower" in hostname:
+            resolved = AGENT_INDEX["cisco-ftd"]
+        elif "xe" in vendor_val or any(m in hostname for m in ("cat9", "9300", "9500", "c8300", "asr1")):
+            resolved = AGENT_INDEX["cisco-ios-xe"]
+        elif "cisco" in vendor_val or "ios" in vendor_val:
+            resolved = AGENT_INDEX["cisco-ios"]
 
-    return AGENT_INDEX["auto"]
+    if is_plan:
+        plan_id = to_plan_agent(resolved.id)
+        return AGENT_INDEX.get(plan_id, AGENT_INDEX["auto-plan"])
+
+    return resolved
 
 
-def get_agent_options() -> list[tuple[str, str]]:
-    """Return Select options for UI dropdowns."""
-    return [(f"{a.name}", a.id) for a in AGENTS]
+def get_agent_options(is_plan_mode: bool = False) -> list[tuple[str, str]]:
+    """Return Select options for UI dropdowns without awkward multi-line text wrapping."""
+    agents_list = PLAN_AGENTS if is_plan_mode else AGENTS
+    return [
+        (("Auto-Detect Plan" if is_plan_mode else "Auto-Detect (Recommended)") if a.id in ("auto", "auto-plan") else (a.short_name or a.name.replace(" Specialist", "")), a.id)
+        for a in agents_list
+    ]

@@ -40,6 +40,9 @@ def print_step(step: str, title: str) -> None:
 
 
 def check_prerequisites() -> tuple[str, str]:
+    cargo_bin = str(Path.home() / ".cargo" / "bin")
+    if cargo_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")
     if not cargo or not rustc:
@@ -105,6 +108,11 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
     else:
         print("      ✓ Using existing PyApp source cache.")
 
+    # Remove stale or version-incompatible Cargo.lock so cargo regenerates it cleanly
+    lock_file = pyapp_dir / "Cargo.lock"
+    if lock_file.exists():
+        lock_file.unlink(missing_ok=True)
+
     # Copy icon into pyapp root
     shutil.copy2(icon_path, pyapp_dir / "rackhand.ico")
 
@@ -158,17 +166,27 @@ def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output
     print("      Invoking Cargo (Rust) release compilation...")
     start_time = time.time()
 
-    cmd = ["cargo", "build", "--release"]
+    target_args = ["--target", "x86_64-pc-windows-gnu"] if sys.platform != "win32" else []
+    cargo = shutil.which("cargo") or "cargo"
+    cmd = [cargo, "build", "--release"] + target_args
     res = subprocess.run(cmd, cwd=str(pyapp_dir), env=env)
     if res.returncode != 0:
         print(f"\n[ERROR] Cargo compilation failed with exit code {res.returncode}")
         sys.exit(res.returncode)
 
     elapsed = time.time() - start_time
-    built_exe = pyapp_dir / "target" / "release" / "pyapp.exe"
-    if not built_exe.exists():
-        print(f"[ERROR] Expected binary not found at {built_exe}")
-        sys.exit(1)
+    candidates = [
+        pyapp_dir / "target" / "x86_64-pc-windows-gnu" / "release" / "pyapp.exe",
+        pyapp_dir / "target" / "release" / "pyapp.exe",
+    ]
+    built_exe = next((p for p in candidates if p.exists()), None)
+    if not built_exe:
+        found = list(pyapp_dir.glob("target/**/pyapp.exe"))
+        if found:
+            built_exe = found[0]
+        else:
+            print(f"[ERROR] Expected binary not found in target directories.")
+            sys.exit(1)
 
     shutil.copy2(built_exe, output_exe)
     print(f"      ✓ Cargo build finished in {elapsed:.1f}s")

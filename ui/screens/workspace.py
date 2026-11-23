@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import re
 import uuid
 from typing import Any, Optional
 
@@ -9,6 +11,7 @@ from rich.console import Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
 from textual.app import ComposeResult
@@ -28,17 +31,21 @@ from models import (
     Risk, Settings, Transport, Vendor, extract_hostname,
 )
 from ui.messages import (
-    AssistantMessage, ChatMessage, GenericMessage, ProposalVerdictMessage,
-    ToolBundleMessage, ToolCallEntry, UserMessage,
+    AssistantMessage, ChatMessage, CompactionCheckpointMessage, GenericMessage,
+    ProposalVerdictMessage, ToolBundleMessage, ToolCallEntry, UserMessage,
 )
 from ui.suggestions import CommandSuggestionsBox, PromptInput
-from agents import AGENTS, get_agent, get_agent_options, resolve_agent
+from agents import (
+    AGENTS, get_agent, get_agent_options, resolve_agent,
+    to_plan_agent, to_build_agent, is_plan_agent,
+)
 from ui.modals import (
-    AgentPickerModal, ApprovalModal, ConnectScreen, ProvidersScreen, SettingsModal,
+    AgentPickerModal, ApprovalModal, ConnectScreen, EffortPickerModal, ProvidersScreen, SettingsModal,
+    UsageModal,
 )
 from ui.styles import (
     MenuStatic, SelectableStatic, build_sidebar_banner, fmt_bytes_prompt,
-    generate_session_title, highlight_config, pill, sel_value,
+    highlight_config, pill, sel_value,
 )
 
 THEMES = ["rackhand", "tokyo-night", "nord", "gruvbox", "dracula", "catppuccin-mocha", "textual-dark"]
@@ -115,14 +122,10 @@ class SessionRow(Horizontal):
         self.is_active = is_active
 
     def compose(self) -> ComposeResult:
-        dot = "* " if self.is_active else "  "
         title = self.title_text
-        if len(title) > 17:
-            title = title[:16] + "…"
-        t = Text.assemble(
-            (dot, "bold #22c55e" if self.is_active else "dim"),
-            (title, "bold white" if self.is_active else "dim"),
-        )
+        if len(title) > 18:
+            title = title[:17] + "…"
+        t = Text(title, style="bold white" if self.is_active else "#999999")
         yield Static(t, classes="session-title")
         btn = Button("×", classes="session-del-btn", tooltip="Delete session")
         btn.can_focus = False
@@ -275,6 +278,7 @@ class WorkspaceScreen(Screen):
         self.chat_messages: dict[str, list[ChatMessage]] = {}
         self._session_counter: int = 0
         self.active_agent_id: str = "auto"
+        self.current_mode: str = "build"
 
     def _start_sidebar_drag(self, screen_x: int) -> None:
         self._drag_active = True
@@ -320,13 +324,84 @@ class WorkspaceScreen(Screen):
         sess = ChatSession(
             id=uuid.uuid4().hex[:8],
             num=self._session_counter,
+            mode=self.current_mode,
         )
         self.chat_sessions.append(sess)
         self.chat_messages[sess.id] = []
         return sess
 
+    def fork_chat_session(self, source_session_id: str) -> ChatSession:
+        """Clone an existing session's messages and state into a new session titled '{title} (fork #N)'."""
+        source_sess = next((s for s in self.chat_sessions if s.id == source_session_id), None)
+        cur_title = (source_sess.title if source_sess and source_sess.title else None) or (source_sess.display_title if source_sess else "Session")
+
+        # Determine fork title
+        match = re.search(r"^(.*?)(?:\s*\(fork\s*#\d+\))?$", cur_title)
+        base_title = match.group(1).strip() if match else cur_title
+
+        existing_nums: list[int] = []
+        pattern = re.compile(rf"^{re.escape(base_title)}\s*\(fork\s*#(\d+)\)$")
+        for s in self.chat_sessions:
+            s_title = s.title or s.display_title
+            m = pattern.match(s_title)
+            if m:
+                try:
+                    existing_nums.append(int(m.group(1)))
+                except ValueError:
+                    pass
+
+        next_num = max(existing_nums, default=0) + 1
+        fork_title = f"{base_title} (fork #{next_num})"
+
+        # Create new session
+        self._session_counter += 1
+        new_sess = ChatSession(
+            id=uuid.uuid4().hex[:8],
+            num=self._session_counter,
+            title=fork_title,
+            has_prompt=source_sess.has_prompt if source_sess else False,
+            tokens_in=source_sess.tokens_in if source_sess else 0,
+            tokens_out=source_sess.tokens_out if source_sess else 0,
+            mode=source_sess.mode if source_sess else self.current_mode,
+            agent_id=getattr(source_sess, "agent_id", None) or self.active_agent_id,
+        )
+        self.chat_sessions.append(new_sess)
+
+        # Clone UI messages
+        source_msgs = self.chat_messages.get(source_session_id, [])
+        self.chat_messages[new_sess.id] = [m.clone() for m in source_msgs]
+
+        # Clone context memory in backend
+        if hasattr(self.app.backend, "clone_session_memory"):
+            try:
+                self.app.backend.clone_session_memory(source_session_id, new_sess.id)
+            except Exception as exc:
+                logger.debug("Failed to clone backend session memory: %s", exc)
+
+        return new_sess
+
+    def _sync_agent_select(self) -> None:
+        try:
+            sel = self.query_one("#agent-select", Select)
+            is_plan = (self.current_mode == "plan")
+            sel.set_options(get_agent_options(is_plan_mode=is_plan))
+            sel.value = self.active_agent_id
+        except Exception:
+            pass
+
     def _switch_to_session(self, session_id: str) -> None:
         self.active_session_id = session_id
+        sess = self.active_chat_session
+        if sess:
+            self.current_mode = sess.mode
+            if sess.agent_id:
+                self.active_agent_id = sess.agent_id
+            else:
+                if self.current_mode == "plan":
+                    self.active_agent_id = to_plan_agent(self.active_agent_id)
+                else:
+                    self.active_agent_id = to_build_agent(self.active_agent_id)
+            self._sync_agent_select()
         chat = self.query_one("#chat", VerticalScroll)
         chat.remove_children()
         messages = self.chat_messages.get(session_id, [])
@@ -388,18 +463,17 @@ class WorkspaceScreen(Screen):
             lst.add_option(Option(Text("  no connected devices", style="dim"), id=None, disabled=True))
             return
         for i, s in enumerate(sessions):
-            dot = "*" if s.id == self.app.active_id else " "
+            is_active = (s.id == self.app.active_id)
             name = s.hostname or s.profile.name
             if len(name) > 18:
                 name = name[:17] + "…"
             trans = s.profile.transport.value
             t = Text.assemble(
-                (f"{dot} ", "bold white" if dot == "*" else "dim"),
-                (name, "bold white" if dot == "*" else "dim"),
-                (f" ({trans})", "dim"),
+                (f"  {name}", "bold white" if is_active else "#999999"),
+                (f"  {trans}", "bold #38bdf8" if is_active else "dim #666666"),
             )
             lst.add_option(Option(t, id=s.id))
-            if s.id == self.app.active_id:
+            if is_active:
                 lst.highlighted = i
 
     def refresh_console_devices(self) -> None:
@@ -463,9 +537,6 @@ class WorkspaceScreen(Screen):
                                 btn_model = Button("model", id="btn-model")
                                 btn_model.can_focus = False
                                 yield btn_model
-                                btn_settings = Button("settings", id="btn-composer-settings")
-                                btn_settings.can_focus = False
-                                yield btn_settings
                 with TabPane("console", id="tab-console"):
                     with Horizontal(id="console-header"):
                         with Horizontal(id="console-hdr-left"):
@@ -492,39 +563,83 @@ class WorkspaceScreen(Screen):
                             yield Static(hdr, id="settings-title")
                             yield Static("Configure safety guardrails and execution limits.", id="settings-subtitle")
 
-                        # 1. Safety & Guardrails
+                        # 1. Approval Policy & Safety
                         with Vertical(classes="settings-card"):
                             with Vertical(classes="settings-card-header"):
-                                yield Static("SAFETY & GUARDRAILS", classes="settings-card-title")
+                                yield Static("APPROVAL POLICY & SAFETY", classes="settings-card-title")
                                 yield Static("Control human approval thresholds and secret sanitization.", classes="settings-card-desc")
 
-                            yield Label("Approval Policy", classes="settings-field-lbl")
-                            yield Select(
-                                [
-                                    ("Config changes only (Recommended)", "ask_changes"),
-                                    ("Every command", "ask_all"),
-                                    ("Dangerous actions only", "auto_safe"),
-                                ],
-                                value="ask_changes",
-                                allow_blank=False,
-                                id="ws-s-approval",
-                            )
-                            yield Static("Controls when the autonomous agent pauses for explicit confirmation.", classes="settings-field-help")
+                            with Vertical(classes="settings-item"):
+                                yield Label("Approval Policy", classes="settings-field-lbl")
+                                yield Select(
+                                    [
+                                        ("Config changes only (Recommended)", "ask_changes"),
+                                        ("Autonomous (AI review & auto-approval)", "autonomous"),
+                                        ("Dangerous actions only (AI danger check)", "auto_safe"),
+                                        ("Every command", "ask_all"),
+                                    ],
+                                    value="ask_changes",
+                                    allow_blank=False,
+                                    id="ws-s-approval",
+                                )
+                                yield Static("Controls when the autonomous agent pauses for explicit confirmation.", classes="settings-field-help")
 
-                            yield Checkbox("Snapshot running-config before applying changes", True, id="ws-s-backup")
-                            yield Static("Archives active config to NVRAM rollback history prior to changes.", classes="settings-field-help")
+                            with Vertical(classes="settings-item"):
+                                yield Label("Model Reasoning Effort / Thinking Variant", classes="settings-field-lbl")
+                                yield Select(
+                                    [
+                                        ("Off / Minimal (Fastest, no thinking tokens)", "off"),
+                                        ("Low (Light reasoning budget)", "low"),
+                                        ("Medium (Balanced - Default)", "medium"),
+                                        ("High (Deep reasoning budget)", "high"),
+                                        ("Max / Extra High (Exhaustive analysis)", "max"),
+                                    ],
+                                    value="medium",
+                                    allow_blank=False,
+                                    id="ws-s-effort",
+                                )
+                                yield Static("Controls reasoning token budget and thinking depth for supported AI models.", classes="settings-field-help")
 
-                            yield Checkbox("Mask passwords, hashes, and SNMP community strings", True, id="ws-s-redact")
-                            yield Static("Sanitizes sensitive credentials before console output reaches the LLM.", classes="settings-field-help")
+                            with Vertical(classes="settings-checkbox-item"):
+                                yield Checkbox("Mask passwords, hashes, and SNMP community strings", True, id="ws-s-redact")
+                                yield Static("Sanitizes sensitive credentials before console output reaches the LLM.", classes="settings-field-help")
 
-                        # 2. Terminal & Execution Limits
+                        # 2. Automated Pre-Change Snapshots
+                        with Vertical(classes="settings-card"):
+                            with Vertical(classes="settings-card-header"):
+                                yield Static("AUTOMATED PRE-CHANGE SNAPSHOTS", classes="settings-card-title")
+                                yield Static("Capture configuration backups and health baselines before changes.", classes="settings-card-desc")
+
+                            with Vertical(classes="settings-checkbox-item"):
+                                yield Checkbox("Pull running-config before changes", True, id="ws-s-snap-cfg")
+                                yield Static("Pulls full active configuration prior to applying changes.", classes="settings-field-help")
+
+                            with Vertical(classes="settings-checkbox-item"):
+                                yield Checkbox("Capture health statistics baseline (interfaces, routing, CPU)", False, id="ws-s-snap-stats")
+                                yield Static("Records baseline telemetry to verify against after changes apply.", classes="settings-field-help")
+
+                            with Vertical(classes="settings-item"):
+                                yield Label("Snapshot Storage Destination", classes="settings-field-lbl")
+                                yield Select(
+                                    [
+                                        ("Local machine (~/.rackhand/snapshots)", "local"),
+                                        ("On-device storage (flash:)", "device"),
+                                    ],
+                                    value="local",
+                                    allow_blank=False,
+                                    id="ws-s-snap-dest",
+                                )
+                                yield Static("Choose whether config snapshots reside locally or on hardware flash.", classes="settings-field-help")
+
+                        # 3. Terminal & Execution Limits
                         with Vertical(classes="settings-card"):
                             with Vertical(classes="settings-card-header"):
                                 yield Static("TERMINAL & EXECUTION LIMITS", classes="settings-card-title")
                                 yield Static("CLI output pagination and autonomous execution boundaries.", classes="settings-card-desc")
 
-                            yield Checkbox("Disable CLI output paging automatically", True, id="ws-s-paging")
-                            yield Static("Executes 'terminal length 0' or FortiOS equivalent on session connect.", classes="settings-field-help")
+                            with Vertical(classes="settings-checkbox-item"):
+                                yield Checkbox("Disable CLI output paging automatically", True, id="ws-s-paging")
+                                yield Static("Executes 'terminal length 0' or FortiOS equivalent on session connect.", classes="settings-field-help")
 
                             with Horizontal(classes="settings-row"):
                                 with Vertical(classes="settings-col"):
@@ -536,18 +651,20 @@ class WorkspaceScreen(Screen):
                                     yield Input("30", id="ws-s-timeout", type="integer")
                                     yield Static("Timeout before aborting stalled commands.", classes="settings-field-help")
 
-                        # 3. Logging & Transcripts
+                        # 4. Logging & Transcripts
                         with Vertical(classes="settings-card"):
                             with Vertical(classes="settings-card-header"):
                                 yield Static("LOGGING & TRANSCRIPTS", classes="settings-card-title")
                                 yield Static("Audit trail retention and file paths.", classes="settings-card-desc")
 
-                            yield Checkbox("Save full session transcripts to disk", True, id="ws-s-transcripts")
-                            yield Static("Persists raw device CLI input/output and agent reasoning.", classes="settings-field-help")
+                            with Vertical(classes="settings-checkbox-item"):
+                                yield Checkbox("Save full session transcripts to disk", True, id="ws-s-transcripts")
+                                yield Static("Persists raw device CLI input/output and agent reasoning.", classes="settings-field-help")
 
-                            yield Label("Transcript Directory", classes="settings-field-lbl")
-                            yield Input("~/.rackhand/transcripts", id="ws-s-dir")
-                            yield Static("Path where session audit logs are stored.", classes="settings-field-help")
+                            with Vertical(classes="settings-item"):
+                                yield Label("Transcript Directory", classes="settings-field-lbl")
+                                yield Input("~/.rackhand/transcripts", id="ws-s-dir")
+                                yield Static("Path where session audit logs are stored.", classes="settings-field-help")
 
                         with Horizontal(classes="settings-btn-row"):
                             yield Button("Save settings", variant="primary", id="ws-s-save")
@@ -621,7 +738,7 @@ class WorkspaceScreen(Screen):
 
     def _welcome(self) -> None:
         active_sess = self.active_chat_session
-        sess_title = active_sess.display_title if active_sess else "Session 1#"
+        sess_title = active_sess.display_title if active_sess else "Session #1"
 
         t_top = Text()
         t_top.append(f"{sess_title.upper()}\n", style="bold white")
@@ -796,6 +913,8 @@ class WorkspaceScreen(Screen):
 
         try:
             status_text = Text()
+            if self.current_mode == "plan":
+                status_text.append("[PLAN MODE]  ", style="bold #38bdf8")
             count = len(self.app.sessions)
             if count > 0:
                 status_text.append(f"{count} device{'s' if count != 1 else ''} in scope", style="#999999")
@@ -838,6 +957,14 @@ class WorkspaceScreen(Screen):
             status_text.append(f"{used_fmt} / {max_fmt} tokens ({pct_str})", style=token_style)
 
             self.query_one("#composer-status", Static).update(status_text)
+            try:
+                p_in = self.query_one("#prompt", Input)
+                if self.current_mode == "plan":
+                    p_in.placeholder = "Ask specialist agent (Plan Mode - read-only)... (/build to exit)"
+                else:
+                    p_in.placeholder = "Ask anything, edit config, debug the network... (/ for commands)"
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -990,7 +1117,7 @@ class WorkspaceScreen(Screen):
             self.query_one("#prompt", Input).value = ""
             self._handle_command(text)
             return
-        if app.active is None:  # type: ignore[attr-defined]
+        if app.active is None and self.current_mode != "plan":
             self.notify("Connect a device first (Ctrl+N).", severity="warning")
             return
         if app.provider is None:  # type: ignore[attr-defined]
@@ -1008,6 +1135,8 @@ class WorkspaceScreen(Screen):
             new_id = str(ev.value)
             if new_id != self.active_agent_id:
                 self.active_agent_id = new_id
+                if self.active_chat_session:
+                    self.active_chat_session.agent_id = new_id
                 agent = get_agent(new_id)
                 if agent:
                     try:
@@ -1022,44 +1151,93 @@ class WorkspaceScreen(Screen):
         cmd = parts[0].lower()
         args = parts[1].strip() if len(parts) > 1 else ""
 
-        if cmd in ("agent", "agents"):
-            if not args:
-                self.run_worker(self._open_agent_picker(), group="agent_picker")
-                return
-            if args.lower() in ("list", "all", "help", "?"):
-                lines = [Text("AVAILABLE SPECIALIST AGENTS\n", style="bold white")]
-                for ag in AGENTS:
-                    is_act = ag.id == self.active_agent_id
-                    prefix = "● " if is_act else "  "
-                    style = "bold #38bdf8" if is_act else "bold white"
-                    lines.append(Text.assemble(
-                        (prefix, "bold #38bdf8" if is_act else "dim"),
-                        (f"{ag.badge} ", "bold #f59e0b" if ag.id == "auto" else "bold cyan"),
-                        (f"{ag.name} ", style),
-                        (f"(/agent {ag.id})\n", "dim italic"),
-                        (f"   {ag.description}\n", "dim"),
-                    ))
-                self._bubble(Panel(Group(*lines), border_style="#222222", box=box.ROUNDED, padding=(0, 1)))
+        if cmd == "plan":
+            if self.current_mode == "plan":
+                self._bubble(Panel(
+                    Text("Plan mode is already enabled.\nType /build to exit plan mode.", style="bold #38bdf8"),
+                    border_style="#0284c7",
+                    box=box.ROUNDED,
+                    title="Plan Mode Active",
+                    padding=(0, 1),
+                ))
                 return
 
-            found = get_agent(args)
-            if found:
-                self.active_agent_id = found.id
-                try:
-                    self.query_one("#agent-select", Select).value = found.id
-                except Exception:
-                    pass
-                self._bubble(Text.assemble(
-                    ("Active Specialist Agent: ", "white"),
-                    (f"{found.badge} {found.name}\n", "bold #38bdf8"),
-                    (f"{found.description}", "dim")
-                ))
-                try:
-                    self.notify(f"Active Agent: {found.name}", title="Specialist Agent")
-                except Exception:
-                    pass
+            self.current_mode = "plan"
+            if self.active_chat_session:
+                self.active_chat_session.mode = "plan"
+            self.active_agent_id = to_plan_agent(self.active_agent_id)
+            self._sync_agent_select()
+            self.update_bars()
+
+            plan_banner = (
+                "### Plan Mode Activated\n\n"
+                "Plan Mode is now active. All actions are strictly **read-only** (diagnostic commands only; configuration changes disabled).\n\n"
+                "- Starting hardware discovery and CLI connectivity check...\n"
+                "- Type `/build` at any time to exit Plan Mode and switch back to normal execution."
+            )
+            self._mount_message(AssistantMessage(markdown=plan_banner))
+
+            # Kick off initial discovery turn
+            if self.app.active is not None:
+                self._run_agent("Identify connected devices, verify CLI read access, and ask the operator what task or setup needs to be planned.")
             else:
-                self._bubble(Text(f"Unknown agent '{args}'. Type /agent list to see all available specialist agents.", style="red"))
+                self._mount_message(AssistantMessage(markdown="*No device is currently connected. You can discuss the plan with the specialist agent, or connect a device with `Ctrl+N` for live hardware discovery.*"))
+            return
+
+        if cmd == "build":
+            if self.current_mode == "build":
+                self._bubble(Panel(
+                    Text("Already in Build mode (normal execution workflow).\nType /plan to enter plan mode.", style="bold #22c55e"),
+                    border_style="#16a34a",
+                    box=box.ROUNDED,
+                    title="Build Mode Active",
+                    padding=(0, 1),
+                ))
+                return
+
+            self.current_mode = "build"
+            if self.active_chat_session:
+                self.active_chat_session.mode = "build"
+            self.active_agent_id = to_build_agent(self.active_agent_id)
+            self._sync_agent_select()
+            self.update_bars()
+
+            build_banner = (
+                "### Build Mode Activated\n\n"
+                "Exited Plan Mode. Normal execution workflow is active.\n"
+                "You may now execute commands, apply configuration changes, and proceed with implementation.\n\n"
+                "- Type `/plan` at any time to re-enter Plan Mode."
+            )
+            self._mount_message(AssistantMessage(markdown=build_banner))
+            return
+
+        if cmd == "compact":
+            self.action_compact()
+            return
+
+        if cmd == "fork":
+            self.action_fork()
+            return
+
+        if cmd == "rename":
+            self.action_rename(args)
+            return
+
+        if cmd in ("effort", "variant", "thinking"):
+            self.action_effort(args)
+            return
+
+        if cmd in ("agent", "agents"):
+            try:
+                sel = self.query_one("#agent-select", Select)
+                sel.focus()
+                sel.action_show_overlay()
+            except Exception:
+                pass
+            return
+
+        if cmd in ("usage", "quota", "limits", "ratelimit"):
+            self.action_show_usage()
             return
 
         if cmd in ("settings", "config", "preferences"):
@@ -1069,12 +1247,22 @@ class WorkspaceScreen(Screen):
         if cmd in ("help", "?"):
             help_text = Text()
             help_text.append("RACKHAND CLI COMMANDS\n\n", style="bold white")
+            help_text.append("/plan", style="bold #38bdf8")
+            help_text.append("              Enter plan mode (discovery, read-only inspection, task planning)\n", style="dim")
+            help_text.append("/build", style="bold #38bdf8")
+            help_text.append("             Exit plan mode to normal execution (apply changes & run tasks)\n", style="dim")
+            help_text.append("/compact", style="bold #38bdf8")
+            help_text.append("           Summarize session checkpoint, clear history & continue\n", style="dim")
+            help_text.append("/fork", style="bold #38bdf8")
+            help_text.append("              Clone conversation and open it in a new session\n", style="dim")
+            help_text.append("/rename", style="bold #38bdf8")
+            help_text.append("            Rename the current session title (/rename <title>)\n", style="dim")
+            help_text.append("/effort", style="bold #38bdf8")
+            help_text.append("            Choose model reasoning effort / variant (/variant, /thinking)\n", style="dim")
             help_text.append("/agent", style="bold #38bdf8")
-            help_text.append("             Open interactive specialist agent picker\n", style="dim")
-            help_text.append("/agent <name>", style="bold #38bdf8")
-            help_text.append("      Switch directly (e.g. /agent cisco-asa, /agent fortigate)\n", style="dim")
-            help_text.append("/agent list", style="bold #38bdf8")
-            help_text.append("        List all specialist agents and descriptions\n", style="dim")
+            help_text.append("             Expand specialist agent selector dropdown\n", style="dim")
+            help_text.append("/usage", style="bold #38bdf8")
+            help_text.append("             Show provider usage, rate limits & token windows\n", style="dim")
             help_text.append("/settings", style="bold #38bdf8")
             help_text.append("          Configure guardrails, execution limits & theme\n", style="dim")
             help_text.append("/clear", style="bold #38bdf8")
@@ -1091,9 +1279,11 @@ class WorkspaceScreen(Screen):
         self._bubble(Text(f"unknown command: /{cmd}. Type /help for available commands.", style="dim"))
 
     async def _open_agent_picker(self) -> None:
-        picked = await self.app.push_screen_wait(AgentPickerModal(self.active_agent_id))  # type: ignore[attr-defined]
+        picked = await self.app.push_screen_wait(AgentPickerModal(self.active_agent_id, is_plan_mode=(self.current_mode == "plan")))  # type: ignore[attr-defined]
         if picked:
             self.active_agent_id = picked
+            if self.active_chat_session:
+                self.active_chat_session.agent_id = picked
             try:
                 self.query_one("#agent-select", Select).value = picked
             except Exception:
@@ -1121,23 +1311,36 @@ class WorkspaceScreen(Screen):
             return False
         return not (c.risk is Risk.READ and mode == "ask_changes")
 
+    @work(group="title_gen")
+    async def _generate_session_title_ai(self, sess: ChatSession, prompt: str) -> None:
+        try:
+            provider = self.app.provider  # type: ignore[attr-defined]
+            if not provider:
+                return
+            ai_title = await self.app.backend.generate_session_title(provider, prompt)  # type: ignore[attr-defined]
+            if ai_title:
+                sess.title = ai_title
+                self.refresh_session_list()
+                self.update_bars()
+        except Exception:
+            pass
+
     @work(exclusive=True, group="agent")
     async def _run_agent(self, prompt: str) -> None:
         app = self.app
         backend: Backend = app.backend  # type: ignore[attr-defined]
         self._set_busy(True)
-        # Auto-generate session title on first prompt if not yet generated
+        # Trigger AI session title generation on first prompt if not yet generated
         active_sess = self.active_chat_session
         if active_sess and not active_sess.has_prompt:
             active_sess.has_prompt = True
-            active_sess.title = generate_session_title(prompt, app.active)
-            self.refresh_session_list()
-            self.update_bars()
+            self._generate_session_title_ai(active_sess, prompt)
 
         active_assistant_msg: Optional[AssistantMessage] = None
         active_tool_bundle: Optional[ToolBundleMessage] = None
 
         agent_spec = resolve_agent(self.active_agent_id, app.active)
+        is_plan = (self.current_mode == "plan")
 
         try:
             async for ev in backend.run_turn(
@@ -1147,6 +1350,7 @@ class WorkspaceScreen(Screen):
                 app.settings,
                 agent=agent_spec,
                 chat_session_id=self.active_session_id,
+                is_plan_mode=is_plan,
             ):
                 if isinstance(ev, AgentText):
                     active_tool_bundle = None
@@ -1220,12 +1424,86 @@ class WorkspaceScreen(Screen):
     async def _handle_proposal(self, c: ProposedChange) -> None:
         app = self.app
         self.pending[c.id] = c
-        if self._needs_modal(c):
-            decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))  # type: ignore[attr-defined]
+        mode = app.settings.approval_mode  # type: ignore[attr-defined]
+
+        # 1. Autonomous Policy: spawn fresh agent to review touched config and commands
+        if mode == "autonomous":
+            try:
+                from reviewer import review_change_autonomous
+                verdict = await review_change_autonomous(
+                    change=c,
+                    session=app.active,
+                    provider=app.provider,
+                    llm_engine=app.backend._llm_engine,
+                    run_command_fn=app.backend.run_command,
+                )
+                if verdict.rollback:
+                    c.rollback = verdict.rollback
+                if verdict.risk == Risk.DANGER:
+                    c.risk = Risk.DANGER
+
+                if verdict.auto_approve:
+                    decision = ApprovalDecision(
+                        approved=True,
+                        commands=list(c.commands),
+                        save_after=app.settings.backup_before_change,
+                        note=f"Autonomous Approval: {verdict.reason}",
+                    )
+                    self._mount_message(ProposalVerdictMessage(c, decision))
+                    await app.backend.resolve_approval(c.id, decision)
+                    return
+                else:
+                    if verdict.reason:
+                        c.rationale = f"{c.rationale}\n\n› AI Reviewer: {verdict.reason}".strip()
+                    decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))
+            except Exception:
+                decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))
+
+        # 2. Dangerous actions only: spawn fresh agent to evaluate risk level
+        elif mode == "auto_safe":
+            try:
+                from reviewer import review_danger_only
+                verdict = await review_danger_only(
+                    change=c,
+                    session=app.active,
+                    provider=app.provider,
+                    llm_engine=app.backend._llm_engine,
+                )
+                if verdict.rollback:
+                    c.rollback = verdict.rollback
+                if verdict.risk == Risk.DANGER:
+                    c.risk = Risk.DANGER
+
+                if verdict.is_dangerous or c.risk is Risk.DANGER:
+                    if verdict.reason:
+                        c.rationale = f"{c.rationale}\n\n› Danger Gatekeeper: {verdict.reason}".strip()
+                    decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))
+                else:
+                    decision = ApprovalDecision(
+                        approved=True,
+                        commands=list(c.commands),
+                        save_after=False,
+                        note=f"Safe: {verdict.reason}",
+                    )
+                    self._mount_message(ProposalVerdictMessage(c, decision))
+                    await app.backend.resolve_approval(c.id, decision)
+                    return
+            except Exception:
+                decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))
+
+        # 3. Every command
+        elif mode == "ask_all":
+            decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))
+
+        # 4. Config changes only (Default)
         else:
-            decision = ApprovalDecision(True, list(c.commands), False)
+            if c.risk is not Risk.READ:
+                decision = await app.push_screen_wait(ApprovalModal(c, app.settings.backup_before_change))
+            else:
+                decision = ApprovalDecision(True, list(c.commands), False)
+
         self._mount_message(ProposalVerdictMessage(c, decision))
-        await app.backend.resolve_approval(c.id, decision)  # type: ignore[attr-defined]
+        await app.backend.resolve_approval(c.id, decision)
 
     # ---- actions ----
     def action_focus_prompt(self) -> None:
@@ -1272,8 +1550,11 @@ class WorkspaceScreen(Screen):
         try:
             s = self.app.settings
             self.query_one("#ws-s-approval", Select).value = s.approval_mode
+            self.query_one("#ws-s-effort", Select).value = getattr(s, "reasoning_effort", "medium") or "medium"
+            self.query_one("#ws-s-snap-cfg", Checkbox).value = s.snapshot_config
+            self.query_one("#ws-s-snap-stats", Checkbox).value = s.snapshot_health_stats
+            self.query_one("#ws-s-snap-dest", Select).value = s.snapshot_destination
             self.query_one("#ws-s-redact", Checkbox).value = s.redact_secrets
-            self.query_one("#ws-s-backup", Checkbox).value = s.backup_before_change
             self.query_one("#ws-s-paging", Checkbox).value = s.disable_paging
             self.query_one("#ws-s-transcripts", Checkbox).value = s.keep_transcripts
             self.query_one("#ws-s-dir", Input).value = s.transcript_dir
@@ -1281,6 +1562,68 @@ class WorkspaceScreen(Screen):
             self.query_one("#ws-s-timeout", Input).value = str(s.command_timeout_s)
         except Exception:
             pass
+
+    def action_show_usage(self) -> None:
+        def _post_usage_to_chat(snap: Any) -> None:
+            t = Text()
+            hdr_title = "SUBSCRIPTION USAGE & ROLLING WINDOWS" if snap.is_subscription else "API CREDITS & RATE LIMITS"
+            t.append(f"{hdr_title}\n", style="bold white")
+            t.append(f"Provider: {snap.provider_name}  ·  Model: {snap.model}\n", style="dim")
+            t.append(f"Session Context: {snap.session_total_tokens:,} / {snap.context_window:,} tokens ({snap.context_percent:.1f}% used)\n\n", style="dim")
+
+            elements: list[Any] = [t]
+
+            if snap.is_subscription and snap.subscription_windows:
+                table = Table(box=box.SIMPLE, show_header=True, header_style="bold #38bdf8", border_style="#262626", padding=(0, 1))
+                table.add_column("Quota Window", style="bold white")
+                table.add_column("Window", justify="center", width=8)
+                table.add_column("Remaining", justify="right", width=12)
+                table.add_column("Consumed", justify="right", width=10)
+                table.add_column("Cooldown Timer", justify="left")
+                table.add_column("Refreshes At", justify="left")
+
+                for w in snap.subscription_windows:
+                    rem_style = "bold #10b981" if w.remaining_percent >= 50 else ("bold #f59e0b" if w.remaining_percent >= 20 else "bold #ef4444")
+                    cd_style = "bold #10b981" if "ready" in w.cooldown_display.lower() else "bold #f59e0b"
+                    table.add_row(
+                        w.name,
+                        f"[{w.window.upper()}]" if w.window else "-",
+                        Text(f"{w.remaining_percent:.1f}%", style=rem_style),
+                        f"{w.used_percent:.1f}%",
+                        Text(w.cooldown_display, style=cd_style),
+                        w.reset_time or "-",
+                    )
+                elements.append(table)
+            elif not snap.is_subscription:
+                extra_lines = []
+                if snap.api_quota.plan_name:
+                    extra_lines.append(f"Plan: {snap.api_quota.plan_name}")
+                if snap.api_quota.credits_remaining is not None:
+                    extra_lines.append(f"Credits Remaining: ${snap.api_quota.credits_remaining:.2f}")
+                if snap.rate_limits.has_data:
+                    rl = snap.rate_limits
+                    if rl.remaining_requests is not None and rl.limit_requests:
+                        extra_lines.append(f"RPM: {rl.remaining_requests:,}/{rl.limit_requests:,}")
+                    if rl.remaining_tokens is not None and rl.limit_tokens:
+                        extra_lines.append(f"TPM: {rl.remaining_tokens:,}/{rl.limit_tokens:,}")
+                if extra_lines:
+                    elements.append(Text("  ·  ".join(extra_lines), style="bold #10b981"))
+
+            self._bubble(Panel(Group(*elements), title="usage", title_align="left", border_style="#222222", box=box.ROUNDED, padding=(0, 1)))
+
+        tracker = getattr(self.app.backend, "usage_tracker", None)
+        if not tracker:
+            from usage_tracker import UsageTracker
+            tracker = UsageTracker.get_instance()
+
+        self.app.push_screen(
+            UsageModal(
+                tracker=tracker,
+                provider=self.app.provider,
+                session=self.active_chat_session,
+                on_post_to_chat=_post_usage_to_chat,
+            )
+        )
 
     def action_settings(self) -> None:
         try:
@@ -1291,20 +1634,23 @@ class WorkspaceScreen(Screen):
             else:
                 self._load_settings_tab()
                 main_tabs.active = "tab-settings"
+                try:
+                    self.query_one("#ws-s-approval", Select).focus()
+                except Exception:
+                    pass
         except Exception:
             pass
-
-    @on(Button.Pressed, "#btn-composer-settings")
-    def _open_settings(self) -> None:
-        self.action_settings()
 
     @on(Button.Pressed, "#ws-s-reset")
     def _reset_settings_tab(self) -> None:
         default_s = Settings()
         try:
             self.query_one("#ws-s-approval", Select).value = default_s.approval_mode
+            self.query_one("#ws-s-effort", Select).value = default_s.reasoning_effort
+            self.query_one("#ws-s-snap-cfg", Checkbox).value = default_s.snapshot_config
+            self.query_one("#ws-s-snap-stats", Checkbox).value = default_s.snapshot_health_stats
+            self.query_one("#ws-s-snap-dest", Select).value = default_s.snapshot_destination
             self.query_one("#ws-s-redact", Checkbox).value = default_s.redact_secrets
-            self.query_one("#ws-s-backup", Checkbox).value = default_s.backup_before_change
             self.query_one("#ws-s-paging", Checkbox).value = default_s.disable_paging
             self.query_one("#ws-s-transcripts", Checkbox).value = default_s.keep_transcripts
             self.query_one("#ws-s-dir", Input).value = default_s.transcript_dir
@@ -1340,16 +1686,23 @@ class WorkspaceScreen(Screen):
         except ValueError:
             timeout = 30
 
+        snap_cfg = q("#ws-s-snap-cfg", Checkbox).value
+        effort = sel_value(q("#ws-s-effort", Select)) or "medium"
         new_settings = Settings(
             approval_mode=sel_value(q("#ws-s-approval", Select)) or "ask_changes",
             redact_secrets=q("#ws-s-redact", Checkbox).value,
-            backup_before_change=q("#ws-s-backup", Checkbox).value,
+            backup_before_change=snap_cfg,
+            snapshot_config=snap_cfg,
+            snapshot_health_stats=q("#ws-s-snap-stats", Checkbox).value,
+            snapshot_destination=sel_value(q("#ws-s-snap-dest", Select)) or "local",
+            snapshot_dir=self.app.settings.snapshot_dir,
             keep_transcripts=q("#ws-s-transcripts", Checkbox).value,
             transcript_dir=q("#ws-s-dir", Input).value.strip() or self.app.settings.transcript_dir,
             max_agent_steps=steps,
             command_timeout_s=timeout,
             disable_paging=q("#ws-s-paging", Checkbox).value,
             theme=self.app.settings.theme,
+            reasoning_effort=effort,
         )
         self.app.apply_settings(new_settings)
         self.notify("Settings saved", title="Configuration")
@@ -1383,6 +1736,267 @@ class WorkspaceScreen(Screen):
     def _btn_model(self) -> None:
         self.action_model()
 
+    def action_compact(self) -> None:
+        if self._busy:
+            self.notify("Agent is currently busy. Please wait for execution to complete.", severity="warning")
+            return
+        prov = self.app.provider  # type: ignore[attr-defined]
+        if not prov:
+            self.notify("Choose a model first (F2).", severity="warning")
+            self.action_model()
+            return
+
+        sess_id = self.active_session_id or ""
+        ui_msgs = self.chat_messages.get(sess_id, [])
+        mem_msgs = []
+        if hasattr(self.app.backend, "get_session_messages"):
+            try:
+                mem_msgs = self.app.backend.get_session_messages(sess_id)
+            except Exception:
+                mem_msgs = []
+
+        has_content = False
+        if mem_msgs:
+            has_content = any(m.get("role") != "system" for m in mem_msgs)
+        if not has_content and ui_msgs:
+            has_content = any(isinstance(m, (UserMessage, AssistantMessage)) for m in ui_msgs)
+
+        if not has_content:
+            self._bubble(Panel(
+                Text("No conversation history to compact in this session.\nType a message or run a command first.", style="dim"),
+                border_style="#333333",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            ))
+            return
+
+        self.notify("Compacting conversation history...", title="Compacting")
+        self.run_worker(self._run_compact(sess_id), exclusive=True, group="compact")
+
+    async def _run_compact(self, sess_id: str) -> None:
+        self._set_busy(True)
+        progress_msg = GenericMessage(
+            Panel(
+                Text("Compacting conversation history and generating session checkpoint...", style="italic #38bdf8"),
+                title="compacting",
+                border_style="#0284c7",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+        )
+        self._mount_message(progress_msg)
+        try:
+            prov = self.app.provider  # type: ignore[attr-defined]
+            active_device = self.app.active  # type: ignore[attr-defined]
+            active_agent = get_agent(self.active_agent_id)
+            is_plan = (self.current_mode == "plan")
+
+            # Extract fallback transcript from UI messages if needed
+            ui_transcript_parts = []
+            for m in self.chat_messages.get(sess_id, []):
+                if isinstance(m, UserMessage):
+                    ui_transcript_parts.append(f"USER: {m.text}")
+                elif isinstance(m, AssistantMessage):
+                    if m.markdown.strip():
+                        ui_transcript_parts.append(f"ASSISTANT: {m.markdown.strip()}")
+                elif isinstance(m, CompactionCheckpointMessage):
+                    ui_transcript_parts.append(f"PREVIOUS CHECKPOINT:\n{m.summary.strip()}")
+
+            fallback_transcript = "\n\n".join(ui_transcript_parts)
+
+            checkpoint_summary = await self.app.backend.compact_session(  # type: ignore[attr-defined]
+                session_id=sess_id,
+                provider=prov,
+                session=active_device,
+                agent=active_agent,
+                is_plan_mode=is_plan,
+                fallback_transcript=fallback_transcript,
+            )
+
+            # Clear UI chat messages
+            self.chat_messages[sess_id] = []
+
+            # Clear chat scroll container
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.remove_children()
+
+            # Mount the compaction checkpoint as the starting message
+            checkpoint_widget = CompactionCheckpointMessage(summary=checkpoint_summary)
+            self._mount_message(checkpoint_widget)
+
+            # Reset token counters to reflect compacted context
+            compaction_tokens = max(len(checkpoint_summary) // 4, 100)
+            active_sess = self.active_chat_session
+            if active_sess:
+                active_sess.tokens_in = compaction_tokens
+                active_sess.tokens_out = 0
+            self.tokens_in = compaction_tokens
+            self.tokens_out = 0
+            self.update_bars()
+
+            self.notify("Session context compacted successfully.", title="Compacted")
+        except Exception as exc:
+            logger.exception("Session compaction failed")
+            try:
+                if sess_id in self.chat_messages and progress_msg in self.chat_messages[sess_id]:
+                    self.chat_messages[sess_id].remove(progress_msg)
+                if progress_msg.widget:
+                    progress_msg.widget.remove()
+            except Exception:
+                pass
+            self.notify(f"Compaction failed: {exc}", severity="error")
+            self._bubble(Panel(
+                Text(f"Compaction failed: {exc}", style="bold red"),
+                title="Compaction Error",
+                border_style="red",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            ))
+        finally:
+            self._set_busy(False)
+
+    def action_fork(self) -> None:
+        """Clone the active conversation into a new session and switch to it immediately."""
+        if not self.active_session_id:
+            self.notify("No active session to fork.", severity="warning")
+            return
+
+        new_sess = self.fork_chat_session(self.active_session_id)
+        self._switch_to_session(new_sess.id)
+        self.notify(f"Forked session: {new_sess.title}", title="Session Forked")
+        try:
+            self.query_one("#prompt", Input).focus()
+        except Exception:
+            pass
+
+    def _sync_provider_model_variant(self, effort: str) -> Optional[str]:
+        """If active model has an effort variant suffix (e.g. -low, -medium, -high), sync it with chosen effort."""
+        prov = getattr(self.app, "provider", None)
+        if not prov or not getattr(prov, "model", None):
+            return None
+
+        cur_model = prov.model.strip()
+        pattern = re.compile(r'^(.*?)-(low|medium|high|xhigh|max)$', re.IGNORECASE)
+        m = pattern.match(cur_model)
+        if m:
+            base_model = m.group(1)
+            if effort in ("off", "none", "low"):
+                target_suffix = "low"
+            elif effort in ("high", "max", "xhigh"):
+                target_suffix = "high"
+            else:
+                target_suffix = "medium"
+
+            new_model = f"{base_model}-{target_suffix}"
+            if new_model.lower() != cur_model.lower():
+                prov.model = new_model
+                if hasattr(self.app.backend, "save_provider_config"):
+                    try:
+                        self.run_worker(self.app.backend.save_provider_config(prov), group="save-prov")
+                    except Exception:
+                        pass
+                self.update_bars()
+                return new_model
+        return None
+
+    def action_effort(self, arg: str = "") -> None:
+        """Set or open picker for model reasoning effort / thinking variant."""
+        raw = arg.strip().lower()
+        valid_map = {
+            "off": "off",
+            "none": "off",
+            "0": "off",
+            "false": "off",
+            "disabled": "off",
+            "low": "low",
+            "1": "low",
+            "med": "medium",
+            "medium": "medium",
+            "default": "medium",
+            "2": "medium",
+            "high": "high",
+            "deep": "high",
+            "3": "high",
+            "max": "max",
+            "xhigh": "max",
+            "extra-high": "max",
+            "4": "max",
+        }
+        if raw:
+            if raw in valid_map:
+                normalized = valid_map[raw]
+                self.app.settings.reasoning_effort = normalized
+                self.app.apply_settings(self.app.settings)
+                model_swapped = self._sync_provider_model_variant(normalized)
+                extra = f"\nActive Model variant switched to: {model_swapped}" if model_swapped else ""
+                self.notify(f"Reasoning effort set to: {normalized.upper()}", title="Model Effort")
+                self._bubble(Panel(
+                    Text(f"Model reasoning effort updated to: {normalized.upper()}{extra}\nChoice has been saved and will persist across sessions.", style="bold #38bdf8"),
+                    border_style="#0284c7",
+                    box=box.ROUNDED,
+                    title="Model Effort",
+                    padding=(0, 1),
+                ))
+            else:
+                self._bubble(Panel(
+                    Text(f"Unknown effort level '{arg}'.\nValid options: off, low, medium, high, max\nOr type /effort without arguments to open the selection modal.", style="bold #f59e0b"),
+                    border_style="#d97706",
+                    box=box.ROUNDED,
+                    title="Invalid Effort",
+                    padding=(0, 1),
+                ))
+            return
+
+        self.run_worker(self._open_effort_picker())
+
+    async def _open_effort_picker(self) -> None:
+        current = getattr(self.app.settings, "reasoning_effort", "medium") or "medium"
+        picked = await self.app.push_screen_wait(EffortPickerModal(current_effort=current))
+        if picked and picked != current:
+            self.app.settings.reasoning_effort = picked
+            self.app.apply_settings(self.app.settings)
+            model_swapped = self._sync_provider_model_variant(picked)
+            extra = f"\nActive Model variant switched to: {model_swapped}" if model_swapped else ""
+            self.notify(f"Reasoning effort set to: {picked.upper()}", title="Model Effort")
+            self._bubble(Panel(
+                Text(f"Model reasoning effort updated to: {picked.upper()}{extra}\nChoice has been saved and will persist across sessions.", style="bold #38bdf8"),
+                border_style="#0284c7",
+                box=box.ROUNDED,
+                title="Model Effort",
+                padding=(0, 1),
+            ))
+
+    def action_rename(self, new_title: str = "") -> None:
+        """Rename the current session title."""
+        title = new_title.strip()
+        if not title:
+            self._bubble(Panel(
+                Text("Usage: /rename <new title>\nRenames the current active chat session.", style="bold #f59e0b"),
+                title="Rename Session Title",
+                border_style="#d97706",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            ))
+            return
+
+        sess = self.active_chat_session
+        if not sess:
+            self.notify("No active session to rename.", severity="warning")
+            return
+
+        sess.title = title
+        sess.has_prompt = True  # Prevent automatic AI titler from overwriting the user's custom title
+        self.refresh_session_list()
+        self.update_bars()
+        self.notify(f"Session renamed to: {title}", title="Session Renamed")
+        self._bubble(Panel(
+            Text(f"Session renamed to: {title}", style="bold #38bdf8"),
+            title="Session Renamed",
+            border_style="#0284c7",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        ))
+
     def action_clear_chat(self) -> None:
         try:
             main_tabs = self.query_one("#main", TabbedContent)
@@ -1395,4 +2009,9 @@ class WorkspaceScreen(Screen):
         chat.remove_children()
         if self.active_session_id:
             self.chat_messages[self.active_session_id] = []
+            if hasattr(self.app.backend, "clear_session_memory"):
+                try:
+                    self.app.backend.clear_session_memory(self.active_session_id)
+                except Exception:
+                    pass
         self._welcome()

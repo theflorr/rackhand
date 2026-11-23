@@ -106,6 +106,20 @@ NETWORK_TOOLS = [
     }
 ]
 
+PLAN_NETWORK_TOOLS = [NETWORK_TOOLS[0]]
+
+
+def is_mutating_cli_command(cmd: str) -> bool:
+    """Return True if command attempts to alter device configuration or reload hardware."""
+    c = cmd.strip().lower()
+    mutating_prefixes = (
+        "conf", "config", "wr", "write", "copy", "reload", "reboot",
+        "delete", "erase", "format", "no ", "default ", "set ", "unset ",
+        "install", "rollback", "archive",
+        "execute reboot", "execute factoryreset", "execute restore",
+    )
+    return any(c.startswith(p) for p in mutating_prefixes)
+
 
 # ==============================================================================
 # CONTEXT MEMORY MANAGER
@@ -121,6 +135,16 @@ class ContextMemoryManager:
 
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         return self.sessions.setdefault(session_id, [])
+
+    def clear(self, session_id: str) -> None:
+        """Clear conversation memory for a session."""
+        self.sessions.pop(session_id, None)
+
+    def clone_session(self, source_session_id: str, target_session_id: str) -> None:
+        """Clone all messages from source session to target session."""
+        import copy
+        source_msgs = self.sessions.get(source_session_id, [])
+        self.sessions[target_session_id] = copy.deepcopy(source_msgs)
 
     def add_message(self, session_id: str, role: str, content: Any, **kwargs: Any) -> None:
         msgs = self.get_messages(session_id)
@@ -176,10 +200,11 @@ class RealLLMEngine:
     async def aclose(self) -> None:
         await self._http_client.aclose()
 
-    def build_system_message(self, session: Optional[DeviceSession], agent_spec: Any) -> str:
+    def build_system_message(self, session: Optional[DeviceSession], agent_spec: Any, is_plan_mode: bool = False) -> str:
         base_prompt = getattr(agent_spec, "system_prompt", "")
         badge = getattr(agent_spec, "badge", "[AGENT]")
         name = getattr(agent_spec, "name", "Specialist Agent")
+        agent_id = str(getattr(agent_spec, "id", "")).lower()
 
         # Inject real hardware context
         if session:
@@ -201,7 +226,18 @@ class RealLLMEngine:
                 "No live device is currently connected. You can assist the operator with network engineering questions, "
                 "troubleshooting methodologies, command syntax, configuration design, and architecture planning."
             )
-        return f"{base_prompt}{hw_context}"
+
+        plan_notice = ""
+        if is_plan_mode or "plan" in agent_id:
+            plan_notice = (
+                "\n\n### CURRENT MODE: PLAN MODE (STRICT READ-ONLY)\n"
+                "- You are operating in PLAN MODE. You are strictly in read-only analysis, discovery, and planning mode.\n"
+                "- Use `run_command` ONLY for safe diagnostic commands ('show', 'get', 'display').\n"
+                "- Configuration mutation commands and `propose_change` are strictly disabled.\n"
+                "- Formulate your comprehensive implementation plan, ask discovery questions, and direct user to /build when done."
+            )
+
+        return f"{base_prompt}{hw_context}{plan_notice}"
 
     async def run_turn(
         self,
@@ -213,6 +249,7 @@ class RealLLMEngine:
         run_command_fn: Callable[[str], Coroutine[Any, Any, Any]],
         propose_change_fn: Callable[[ProposedChange], Coroutine[Any, Any, ApprovalDecision]],
         session_id: Optional[str] = None,
+        is_plan_mode: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Execute a full agent turn with real LLM streaming and hardware tool calling."""
         sess_id = session_id or session.id
@@ -222,14 +259,14 @@ class RealLLMEngine:
         # 1. Initialize Context & System Prompt
         history = self.memory.get_messages(sess_id)
         if not history or history[0].get("role") != "system":
-            system_content = self.build_system_message(session, agent_spec)
+            system_content = self.build_system_message(session, agent_spec, is_plan_mode=is_plan_mode)
             if history:
                 history.insert(0, {"role": "system", "content": system_content})
             else:
                 self.memory.add_message(sess_id, "system", system_content)
         else:
             # Update live prompt in case device mode transitioned
-            history[0]["content"] = self.build_system_message(session, agent_spec)
+            history[0]["content"] = self.build_system_message(session, agent_spec, is_plan_mode=is_plan_mode)
 
         # Append current user prompt
         self.memory.add_message(sess_id, "user", prompt)
@@ -245,6 +282,7 @@ class RealLLMEngine:
                 run_command_fn=run_command_fn,
                 propose_change_fn=propose_change_fn,
                 session_id=sess_id,
+                is_plan_mode=is_plan_mode,
             ):
                 yield ev
             return
@@ -268,7 +306,8 @@ class RealLLMEngine:
             current_messages = list(self.memory.get_messages(sess_id))
 
             # Build Request Payload based on provider scheme
-            endpoint, headers, payload = self._build_request(provider, current_messages)
+            tools_to_use = PLAN_NETWORK_TOOLS if is_plan_mode else (NETWORK_TOOLS if provider.supports_tools else None)
+            endpoint, headers, payload = self._build_request(provider, current_messages, tools=tools_to_use, settings=settings)
 
             response_data = None
             try:
@@ -373,6 +412,12 @@ class RealLLMEngine:
 
                         # Determine command risk
                         is_config = any(cmd.lower().startswith(w) for w in ("conf", "interface", "router", "ip route", "vlan", "no "))
+                        if is_plan_mode and (is_config or is_mutating_cli_command(cmd)):
+                            err_resp = "% Error: Configuration commands are disabled in Plan Mode. Inspect with read-only commands (show/get), formulate your plan, then type /build to execute."
+                            yield AgentToolResult(sub_call_id, err_resp, False)
+                            outputs_for_context.append(f"$ {disp_cmd}\n{err_resp}")
+                            continue
+
                         risk = Risk.CONFIG if is_config else Risk.READ
 
                         # Yield tool call to UI
@@ -398,6 +443,11 @@ class RealLLMEngine:
                     self.memory.add_message(sess_id, "tool", truncated_output, tool_call_id=call_id)
 
                 elif fn_name == "propose_change":
+                    if is_plan_mode:
+                        err_msg = "Error: propose_change is disabled in Plan Mode. Formulate the implementation plan in your response and instruct the user to type /build to execute."
+                        self.memory.add_message(sess_id, "tool", err_msg, tool_call_id=call_id)
+                        continue
+
                     title = args.get("title") or args.get("name") or "Proposed Change"
                     raw_cmds = args.get("commands") or args.get("cmds") or []
                     if not raw_cmds and args.get("command"):
@@ -494,6 +544,7 @@ class RealLLMEngine:
         run_command_fn: Callable[[str], Coroutine[Any, Any, Any]],
         propose_change_fn: Callable[[ProposedChange], Coroutine[Any, Any, ApprovalDecision]],
         session_id: str,
+        is_plan_mode: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         badge = getattr(agent_spec, "badge", "[ANTIGRAVITY]")
         model = provider.model or "gemini-3.8-flash-low"
@@ -501,24 +552,45 @@ class RealLLMEngine:
         total_completion_tokens = 0
         cid = self._agy_conversations.get(session_id)
 
-        system_msg = self.build_system_message(session, agent_spec)
+        system_msg = self.build_system_message(session, agent_spec, is_plan_mode=is_plan_mode)
+        if is_plan_mode:
+            tool_inst = (
+                f"### TOOL INSTRUCTIONS (PLAN MODE - STRICT READ-ONLY)\n"
+                f"You have direct access to execute diagnostic commands on the connected hardware.\n"
+                f"To run a read-only command, you MUST output ONLY a JSON object:\n"
+                f'{{"tool_call": {{"name": "run_command", "arguments": {{"command": "<cli command>"}}}}}}\n'
+                f"NOTE: Configuration changes (propose_change) and mutating commands are STRICTLY PROHIBITED in Plan Mode.\n"
+                f"If diagnostic data is needed before formulating the plan, call run_command.\n"
+                f"When answering the operator, provide your discovery questions and engineering plan in clean markdown without JSON."
+            )
+        else:
+            tool_inst = (
+                f"### TOOL INSTRUCTIONS\n"
+                f"You have direct access to execute diagnostic commands on the connected hardware.\n"
+                f"To run a command, you MUST output ONLY a JSON object:\n"
+                f'{{"tool_call": {{"name": "run_command", "arguments": {{"command": "<cli command>"}}}}}}\n'
+                f"To propose a configuration change, output ONLY a JSON object:\n"
+                f'{{"tool_call": {{"name": "propose_change", "arguments": {{"title": "...", "commands": ["..."], "rationale": "...", "risk": "config"}}}}}}\n'
+                f"If diagnostic data is needed before drawing conclusions, call run_command.\n"
+                f"If answering the operator directly, provide your engineering analysis in clean markdown without JSON."
+            )
+
         current_prompt = (
             f"{system_msg}\n\n"
             f"### OPERATOR REQUEST\n{prompt}\n\n"
-            f"### TOOL INSTRUCTIONS\n"
-            f"You have direct access to execute diagnostic commands on the connected hardware.\n"
-            f"To run a command, you MUST output ONLY a JSON object:\n"
-            f'{{"tool_call": {{"name": "run_command", "arguments": {{"command": "<cli command>"}}}}}}\n'
-            f"To propose a configuration change, output ONLY a JSON object:\n"
-            f'{{"tool_call": {{"name": "propose_change", "arguments": {{"title": "...", "commands": ["..."], "rationale": "...", "risk": "config"}}}}}}\n'
-            f"If diagnostic data is needed before drawing conclusions, call run_command.\n"
-            f"If answering the operator directly, provide your engineering analysis in clean markdown without JSON."
+            f"{tool_inst}"
         ) if not cid else prompt
 
         max_steps = getattr(settings, "max_agent_steps", 10) or 10
 
+        effort = getattr(settings, "reasoning_effort", "medium") or "medium"
+        if effort in ("off", "none"):
+            effort = "low"
+        elif effort == "max":
+            effort = "xhigh"
+
         for step in range(max_steps):
-            cmd = ["agy", "--output-format", "json", "--effort", "low", "--model", model]
+            cmd = ["agy", "--output-format", "json", "--effort", effort, "--model", model]
             if cid:
                 cmd.extend(["--conversation", cid])
             cmd.extend(["-p", current_prompt])
@@ -610,6 +682,12 @@ class RealLLMEngine:
                         disp_cmd = "<CR>" if cli_cmd == "\r\n" else cli_cmd
 
                         is_config = any(cli_cmd.lower().startswith(w) for w in ("conf", "interface", "router", "ip route", "vlan", "no "))
+                        if is_plan_mode and (is_config or is_mutating_cli_command(cli_cmd)):
+                            err_resp = "% Error: Configuration commands are disabled in Plan Mode. Inspect with read-only commands (show/get), formulate your plan, then type /build to execute."
+                            yield AgentToolResult(sub_call_id, err_resp, False)
+                            outputs_for_context.append(f"$ {disp_cmd}\n{err_resp}")
+                            continue
+
                         risk = Risk.CONFIG if is_config else Risk.READ
 
                         yield AgentToolCall(sub_call_id, dev_name, disp_cmd, risk)
@@ -635,6 +713,11 @@ class RealLLMEngine:
                     continue
 
                 elif fn_name == "propose_change":
+                    if is_plan_mode:
+                        err_msg = "Error: propose_change is disabled in Plan Mode. Formulate the implementation plan in your response and instruct the user to type /build to execute."
+                        current_prompt = f"Tool Error: {err_msg}\nProceed with your plan."
+                        continue
+
                     title = args.get("title") or "Proposed Change"
                     raw_cmds = args.get("commands") or args.get("cmds") or []
                     if not raw_cmds and args.get("command"):
@@ -724,7 +807,13 @@ class RealLLMEngine:
 
         yield AgentDone(total_prompt_tokens, total_completion_tokens)
 
-    def _build_request(self, provider: ProviderConfig, messages: list[dict[str, Any]]) -> tuple[str, dict[str, str], dict[str, Any]]:
+    def _build_request(
+        self,
+        provider: ProviderConfig,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
+        settings: Optional[Settings] = None,
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
         """Format request URL, headers, and payload according to API scheme."""
         base_url = (provider.base_url or "https://api.openai.com/v1").rstrip("/")
         api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
@@ -750,14 +839,24 @@ class RealLLMEngine:
         # Bounded max output tokens to prevent OpenRouter 402 quota rejections
         max_tokens = provider.max_output if provider.max_output and provider.max_output > 0 else 2048
 
+        use_tools = tools if tools is not None else (NETWORK_TOOLS if provider.supports_tools else None)
+
         payload = {
             "model": model,
             "messages": messages,
-            "tools": NETWORK_TOOLS if provider.supports_tools else None,
-            "tool_choice": "auto" if provider.supports_tools else None,
+            "tools": use_tools,
+            "tool_choice": "auto" if use_tools else None,
             "max_tokens": max_tokens,
             "temperature": provider.temperature if hasattr(provider, "temperature") else 0.2,
         }
+
+        if settings and getattr(settings, "reasoning_effort", None):
+            effort = settings.reasoning_effort
+            if effort not in ("off", "none"):
+                payload["reasoning_effort"] = "high" if effort == "max" else effort
+                if "openrouter" in base_url.lower():
+                    payload["reasoning"] = {"effort": effort}
+
         # Filter None
         payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -794,3 +893,192 @@ class RealLLMEngine:
         for i in range(0, len(words), chunk_size):
             chunks.append(" ".join(words[i:i + chunk_size]) + " ")
         return chunks
+
+    def clear_session(self, session_id: str) -> None:
+        """Clear session memory and active AGY conversation state."""
+        self.memory.clear(session_id)
+        self._agy_conversations.pop(session_id, None)
+
+    def clone_session(self, source_session_id: str, target_session_id: str) -> None:
+        """Clone context memory for a session into a new session."""
+        self.memory.clone_session(source_session_id, target_session_id)
+
+    async def call_llm_stateless(
+        self,
+        provider: ProviderConfig,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 2500,
+    ) -> Optional[str]:
+        """Execute a single-turn stateless completion for background tasks (titling, review, compaction)."""
+        if provider.scheme == ApiScheme.ANTIGRAVITY or provider.spec_id == "antigravity" or provider.base_url == "local:agy" or "antigravity" in provider.name.lower():
+            model = provider.model or "gemini-3.8-flash-low"
+            full_prompt = f"{system_prompt}\n\n{user_prompt}"
+            cmd = ["agy", "--output-format", "json", "--effort", "low", "--model", model, "-p", full_prompt]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+                if proc.returncode == 0:
+                    data = json.loads(stdout.decode("utf-8", errors="replace"))
+                    return data.get("response", "")
+                else:
+                    err = stderr.decode("utf-8", errors="replace").strip() or stdout.decode("utf-8", errors="replace").strip()
+                    logger.error("AGY call_llm_stateless error: %s", err[:200])
+                    return None
+            except Exception as exc:
+                logger.error("AGY call_llm_stateless exception: %s", exc)
+                return None
+
+        api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
+        if not api_key and "localhost" not in provider.base_url and "127.0.0.1" not in provider.base_url:
+            raise ValueError(f"No API key configured for {provider.name}. Configure an API key or switch providers with F2.")
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        endpoint, headers, payload = self._build_request(provider, messages, tools=None)
+        payload["temperature"] = temperature
+        payload["max_tokens"] = max_tokens
+        try:
+            resp = await self._http_client.post(endpoint, headers=headers, json=payload, timeout=60.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                choice = data.get("choices", [{}])[0]
+                msg_obj = choice.get("message", {})
+                content = msg_obj.get("content") or ""
+                reasoning = msg_obj.get("reasoning_content") or ""
+                if not content and reasoning:
+                    content = reasoning
+                return content
+            else:
+                err_text = self._format_api_error(resp.status_code, resp.text, provider)
+                logger.error("HTTP call_llm_stateless API error: %s", err_text)
+                return None
+        except Exception as exc:
+            logger.error("HTTP call_llm_stateless exception: %s", exc)
+            return None
+
+    @staticmethod
+    def _format_messages_for_compaction(messages: list[dict[str, Any]], fallback_transcript: str = "") -> str:
+        lines: list[str] = []
+        for msg in messages:
+            role = str(msg.get("role", "")).upper()
+            content = str(msg.get("content") or "").strip()
+            tool_calls = msg.get("tool_calls")
+            if role == "SYSTEM":
+                continue
+            if role == "USER":
+                if "[Session Compaction Checkpoint" in content:
+                    lines.append(f"PREVIOUS CHECKPOINT:\n{content}")
+                else:
+                    lines.append(f"USER: {content}")
+            elif role == "ASSISTANT":
+                if tool_calls:
+                    call_strs = []
+                    for tc in tool_calls:
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "tool")
+                        args = fn.get("arguments", "")
+                        call_strs.append(f"{name}({args})")
+                    desc = f"ASSISTANT (Executed commands: {', '.join(call_strs)})"
+                    if content:
+                        desc += f"\n{content}"
+                    lines.append(desc)
+                elif content:
+                    lines.append(f"ASSISTANT: {content}")
+            elif role == "TOOL":
+                tool_name = msg.get("name") or "tool"
+                truncated = ContextMemoryManager.truncate_tool_output(content, max_lines=60)
+                lines.append(f"COMMAND OUTPUT ({tool_name}):\n{truncated}")
+
+        formatted = "\n\n".join(lines).strip()
+        if not formatted and fallback_transcript:
+            return fallback_transcript.strip()
+        return formatted
+
+    async def compact_session(
+        self,
+        session_id: str,
+        provider: ProviderConfig,
+        session: Optional[DeviceSession] = None,
+        agent_spec: Optional[Any] = None,
+        is_plan_mode: bool = False,
+        fallback_transcript: str = "",
+    ) -> str:
+        """Compact conversation history into a structured checkpoint summary and reset memory starting point."""
+        raw_msgs = self.memory.get_messages(session_id)
+        transcript = self._format_messages_for_compaction(raw_msgs, fallback_transcript)
+        if not transcript.strip():
+            transcript = "No prior user interaction or command history recorded in this session."
+
+        hw_info = ""
+        if session:
+            hw_info = (
+                f"CONNECTED HARDWARE TELEMETRY:\n"
+                f"- Hostname: {session.hostname}\n"
+                f"- Vendor/Platform: {session.profile.vendor.value.upper()}\n"
+                f"- Transport: {session.profile.transport.value.upper()}\n"
+                f"- Prompt: {session.prompt}\n\n"
+            )
+
+        compaction_system_prompt = (
+            "You are an expert network engineering assistant compacting conversation context into a structured, high-density session checkpoint.\n"
+            "Analyze the complete conversation history and generate a comprehensive overview and session checkpoint.\n"
+            "Preserve all critical technical facts, hardware models, IP addresses, VLANs, interfaces, diagnostic findings, and operator objectives.\n"
+            "Do not include any emojis.\n\n"
+            "Format your output in clean Markdown using the following sections:\n"
+            "### Session Objective & Scope\n"
+            "- Detail the primary goal, requested network tasks, and operational context.\n\n"
+            "### Connected Devices & Discovered State\n"
+            "- Target hostnames, models, vendors, OS versions, IP/interfaces, and hardware state discovered.\n\n"
+            "### Actions Performed & Diagnostic Findings\n"
+            "- Key CLI commands executed, telemetry analyzed, and findings discovered.\n\n"
+            "### Configuration & Architectural Decisions\n"
+            "- Parameters established (VLANs, IPs, routing policies, safety guardrails).\n\n"
+            "### Current Status & Remaining Next Steps\n"
+            "- The exact current state of the task, what is finished, and pending next steps.\n"
+        )
+
+        user_prompt = (
+            f"{hw_info}"
+            f"Here is the conversation history to compact:\n\n"
+            f"{transcript}"
+        )
+
+        summary = await self.call_llm_stateless(
+            provider=provider,
+            system_prompt=compaction_system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.2,
+            max_tokens=2500,
+        )
+
+        if not summary or not summary.strip():
+            raise RuntimeError(f"Compaction failed: Provider {provider.name} returned an empty summary.")
+
+        summary_text = summary.strip()
+
+        # Clear old session history from memory and AGY state
+        self.clear_session(session_id)
+
+        # Seed context memory with the new starting point
+        sys_msg = self.build_system_message(session, agent_spec, is_plan_mode=is_plan_mode)
+        self.memory.add_message(session_id, "system", sys_msg)
+        self.memory.add_message(
+            session_id,
+            "user",
+            f"[Session Compaction Checkpoint - Conversation history has been compacted]\n\n{summary_text}\n\nPlease continue the session from this checkpoint."
+        )
+        self.memory.add_message(
+            session_id,
+            "assistant",
+            "Understood. I have loaded the conversation checkpoint and all discovered hardware state into my active context. How would you like to proceed?"
+        )
+
+        return summary_text

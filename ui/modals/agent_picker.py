@@ -13,7 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from agents import AGENTS, AGENT_INDEX, AgentSpec, get_agent
+from agents import AGENTS, AGENT_INDEX, PLAN_AGENTS, AgentSpec, get_agent
 from ui.styles import MenuStatic
 
 
@@ -25,14 +25,16 @@ class AgentPickerModal(ModalScreen[Optional[str]]):
         Binding("enter", "confirm", "Select", show=False),
     ]
 
-    def __init__(self, current_agent_id: str = "auto") -> None:
+    def __init__(self, current_agent_id: str = "auto", is_plan_mode: bool = False) -> None:
         super().__init__()
         self._current_agent_id = current_agent_id
         self._selected_agent_id = current_agent_id
+        self._is_plan_mode = is_plan_mode
 
     def compose(self) -> ComposeResult:
+        modal_title = "SPECIALIST NETWORK AGENTS (PLAN MODE)" if self._is_plan_mode else "SPECIALIST NETWORK AGENTS"
         with Vertical(id="agent-dialog", classes="dialog"):
-            yield MenuStatic(Text("SPECIALIST NETWORK AGENTS", style="bold white"), classes="title")
+            yield MenuStatic(Text(modal_title, style="bold white"), classes="title")
 
             with Horizontal(id="agent-modal-body"):
                 # Left pane: agent list with search filter
@@ -61,7 +63,8 @@ class AgentPickerModal(ModalScreen[Optional[str]]):
 
         highlight_idx = 0
         idx = 0
-        for agent in AGENTS:
+        agents_pool = PLAN_AGENTS if self._is_plan_mode else AGENTS
+        for agent in agents_pool:
             if q and q not in agent.name.lower() and q not in agent.description.lower() and q not in agent.id.lower():
                 continue
 
