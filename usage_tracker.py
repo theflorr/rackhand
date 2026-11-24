@@ -415,7 +415,7 @@ class UsageTracker:
                     "anthropic-beta": "oauth-2025-04-20",
                     "User-Agent": "claude-code/0.2.29",
                 }
-                if token.startswith("sk-ant-"):
+                if token.startswith("sk-ant-api") or token.startswith("sk-ant-usr"):
                     headers["x-api-key"] = token
 
                 async with httpx.AsyncClient(timeout=6.0) as client:

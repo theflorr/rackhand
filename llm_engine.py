@@ -18,7 +18,7 @@ import httpx
 
 from models import (
     AgentDone, AgentError, AgentEvent, AgentProposal, AgentText, AgentToolCall,
-    AgentToolResult, ApiScheme, ApprovalDecision, DeviceSession, ProposedChange,
+    AgentToolResult, ApiScheme, ApprovalDecision, AuthStyle, DeviceSession, ProposedChange,
     ProviderConfig, Risk, Settings, ensure_agy_in_path, find_agy_executable,
 )
 
@@ -235,11 +235,23 @@ def build_llm_request(
         else:
             endpoint = base_url
 
+        auth_style = getattr(provider, "auth", None)
+        is_oauth = (
+            api_key.startswith("sk-ant-oat")
+            or api_key.startswith("ey")
+            or (auth_style == AuthStyle.BEARER and not api_key.startswith("sk-ant-"))
+        )
+
         headers = {
-            "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
+        if is_oauth:
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["anthropic-beta"] = "oauth-2025-04-20"
+            headers["user-agent"] = "claude-code/0.2.29"
+        else:
+            headers["x-api-key"] = api_key
         toks = max_tokens if max_tokens is not None else (provider.max_output if provider.max_output and provider.max_output > 0 else 1024)
         model = provider.model or "claude-3-5-sonnet-20241022"
 

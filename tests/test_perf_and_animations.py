@@ -143,3 +143,37 @@ async def test_tabs_styling_equal_and_no_block_highlight():
         assert theme.variables.get("block-cursor-background") == "transparent"
         assert theme.variables.get("block-hover-background") == "transparent"
 
+        # 5. Tab underline bar is recolored to clean white (not light blue #38bdf8)
+        assert "color: #38bdf8;" not in APP_CSS
+        assert "color: #ffffff;" in APP_CSS
+
+
+@pytest.mark.asyncio
+async def test_composer_model_button_sizing():
+    from textual.app import App
+    from textual.containers import Horizontal
+    from textual.widgets import Button, Select, Static
+    from ui.styles import APP_CSS
+
+    class ComposerTestApp(App):
+        CSS = APP_CSS
+
+        def compose(self):
+            with Horizontal(id="composer-footer"):
+                yield Static("status", id="composer-status")
+                with Horizontal(id="composer-actions"):
+                    yield Select([("Auto-Detect", "auto")], value="auto", id="agent-select", allow_blank=False)
+                    yield Button("model", id="btn-model")
+
+    app = ComposerTestApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        btn = app.query_one("#btn-model", Button)
+        btn.label = "gemini-3.8-flash-low"
+        btn.refresh(layout=True)
+        app.query_one("#composer-actions").refresh(layout=True)
+        await pilot.pause()
+        # Ensure button width expanded beyond 9 to fit model name cleanly
+        assert btn.region.width >= 22
+        assert "gemini-3.8-flash-low" in str(btn.label)
+
+

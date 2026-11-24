@@ -619,7 +619,14 @@ class WorkspaceScreen(Screen):
                             yield Static("no devices connected  ·  0 / 200k tokens (0%)", id="composer-status")
                             with Horizontal(id="composer-actions"):
                                 yield Select(get_agent_options(), value=self.active_agent_id, id="agent-select", allow_blank=False)
-                                btn_model = Button("model", id="btn-model")
+                                init_model = "model"
+                                try:
+                                    prov = getattr(self.app, "provider", None) or getattr(self.app, "active_provider", None)
+                                    if prov and getattr(prov, "model", None):
+                                        init_model = prov.model.split("/")[-1]
+                                except Exception:
+                                    pass
+                                btn_model = Button(init_model, id="btn-model")
                                 btn_model.can_focus = False
                                 yield btn_model
                 with TabPane("console", id="tab-console"):
@@ -1122,6 +1129,11 @@ class WorkspaceScreen(Screen):
                 m_btn.label = clean_model
             else:
                 m_btn.label = "model"
+            m_btn.refresh(layout=True)
+            try:
+                self.query_one("#composer-actions").refresh(layout=True)
+            except Exception:
+                pass
         except Exception:
             pass
 

@@ -1124,6 +1124,10 @@ class RealBackend(Backend):
                 old_gem = self._providers["gemini"]
                 if old_gem.api_key and str(old_gem.api_key).startswith("ya29"):
                     del self._providers["gemini"]
+            if cfg.key in self._providers:
+                existing = self._providers[cfg.key]
+                if existing.api_key and isinstance(existing.api_key, str) and existing.api_key.startswith("sk-ant-oat"):
+                    existing.auth = AuthStyle.BEARER
             if cfg.key not in self._providers or not self._providers[cfg.key].api_key:
                 self._providers[cfg.key] = cfg
                 imported.append(cfg)

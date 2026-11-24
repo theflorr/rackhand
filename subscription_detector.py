@@ -139,14 +139,7 @@ def detect_antigravity() -> Optional[DetectedSubscription]:
 
     # If agy binary or gemini:antigravity credential is found, Antigravity is active
     if agy_bin or blob:
-        email = ""
-        if blob:
-            try:
-                d = json.loads(blob.decode("utf-8", errors="replace"))
-                email = d.get("id_token_email") or user or ""
-            except Exception:
-                pass
-        account_str = f"{email} (Google Antigravity / AGY)" if email else "Google Antigravity (AGY CLI Active)"
+        account_str = "Google Antigravity (AGY CLI Active)"
 
         # Read configured model from settings.json if present
         rec_model = "gemini-3.8-flash-low"
@@ -182,7 +175,7 @@ def detect_antigravity() -> Optional[DetectedSubscription]:
                 "claude-opus-4-6-thinking",
                 "gpt-oss-120b-medium",
             ],
-            raw_info={"agy_bin": agy_bin, "email": email},
+            raw_info={"agy_bin": agy_bin},
         )
 
     # Fallback to API Key environment variables for Google AI Studio
@@ -260,6 +253,8 @@ def detect_claude() -> Optional[DetectedSubscription]:
     for base in _get_candidate_dirs():
         candidate_paths.append(base / ".claude.json")
         candidate_paths.append(base / ".claude" / ".credentials.json")
+        candidate_paths.append(base / ".claude" / "credentials.json")
+        candidate_paths.append(base / ".credentials.json")
         candidate_paths.append(base / ".claude" / "settings.json")
         candidate_paths.append(base / "Claude" / "credentials.json")
 
@@ -276,7 +271,6 @@ def detect_claude() -> Optional[DetectedSubscription]:
         oauth_account = data.get("oauthAccount")
         if isinstance(oauth_account, dict):
             token = token or oauth_account.get("token") or oauth_account.get("accessToken") or oauth_account.get("oauthToken") or ""
-            email = email or oauth_account.get("emailAddress") or oauth_account.get("email") or ""
             plan = plan or oauth_account.get("billingType") or oauth_account.get("plan") or ""
 
         claude_oauth = data.get("claudeAiOauth")
@@ -287,15 +281,25 @@ def detect_claude() -> Optional[DetectedSubscription]:
         if not token:
             token = data.get("primaryApiKey") or data.get("apiKey") or data.get("oauthToken") or ""
 
-        if token or email or plan:
+        if token or plan:
             found_path = p
             if token:
                 break
 
-    if token or email or plan:
-        account_str = f"{email} ({plan})" if email and plan else (email or plan or "Claude Code Active")
+    if token or plan:
+        clean_plan = str(plan).replace('_', ' ').strip().title() if plan else "Subscription Active"
+        account_str = f"Plan: {clean_plan}" if clean_plan else "Claude Code Active"
         api_token = token or "claude-code-session-token"
         source = f"Claude Code ({found_path.name if found_path else '.claude.json'})"
+        is_oauth = (
+            api_token.startswith("sk-ant-oat")
+            or api_token.startswith("ey")
+            or "oauth" in str(plan).lower()
+            or "stripe" in str(plan).lower()
+            or "subscription" in str(plan).lower()
+            or bool(found_path and "credentials.json" in str(found_path))
+            or (not api_token.startswith("sk-ant-api") and not api_token.startswith("sk-ant-usr"))
+        )
         return DetectedSubscription(
             id="detected:claude",
             name="Claude (Anthropic)",
@@ -306,7 +310,7 @@ def detect_claude() -> Optional[DetectedSubscription]:
             scheme=ApiScheme.ANTHROPIC,
             base_url="https://api.anthropic.com",
             api_key=api_token,
-            auth=AuthStyle.BEARER if api_token.startswith("ey") or "oauth" in str(plan).lower() else AuthStyle.X_API_KEY,
+            auth=AuthStyle.BEARER if is_oauth else AuthStyle.X_API_KEY,
             recommended_model="claude-3-5-sonnet-20241022",
             extra_models=["claude-3-5-sonnet-20241022", "claude-sonnet-5.5", "claude-haiku-5.5"],
         )

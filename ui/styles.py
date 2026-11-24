@@ -925,7 +925,7 @@ Tab.-active {
 }
 
 Underline > .underline--bar {
-    color: #38bdf8;
+    color: #ffffff;
     background: transparent;
 }
 
@@ -1099,6 +1099,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 #composer-status {
     width: 1fr;
+    min-width: 10;
     height: 1;
     padding: 0 1;
     color: #666666;
@@ -1114,6 +1115,9 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
     border: none;
 }
 #btn-model {
+    width: auto;
+    min-width: 8;
+    max-width: 28;
     background: #141722;
     color: #8da4c4;
 }
@@ -1127,7 +1131,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 
 #agent-select {
-    width: 30;
+    width: 25;
     height: 1;
     border: none;
     background: #141722;
@@ -1150,7 +1154,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
     color: #c0d4f0;
 }
 #agent-select SelectOverlay {
-    width: 34;
+    width: 32;
     height: auto;
     max-height: 14;
 }

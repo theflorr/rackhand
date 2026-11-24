@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional
 
 from rich.text import Text
@@ -39,6 +40,15 @@ def _parse_pairs(text: str, sep: str) -> dict[str, str]:
 
 def _fmt_pairs(d: dict[str, str], sep: str) -> str:
     return "\n".join(f"{k}{sep}{v}" for k, v in d.items())
+
+
+def _clean_privacy_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '', str(text))
+    cleaned = re.sub(r'\(\s*\)', '', cleaned)
+    cleaned = re.sub(r'\s+-\s*$', '', cleaned)
+    return re.sub(r'\s{2,}', ' ', cleaned).strip()
 
 
 def _int(text: str, default: int = 0) -> int:
@@ -313,6 +323,10 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
             detected_match = self._detected_by_id[key]
             if detected_match.spec_id in self._configs:
                 cfg = self._configs[detected_match.spec_id]
+                if detected_match.api_key and not cfg.api_key:
+                    cfg.api_key = detected_match.api_key
+                if detected_match.auth == AuthStyle.BEARER or (isinstance(cfg.api_key, str) and cfg.api_key.startswith("sk-ant-oat")):
+                    cfg.auth = AuthStyle.BEARER
             else:
                 cfg = detected_match.to_provider_config()
         else:
@@ -330,6 +344,10 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
                                      supports_streaming=spec.streaming)
             else:
                 return
+
+        # Ensure sk-ant-oat tokens use BEARER auth style
+        if isinstance(cfg.api_key, str) and (cfg.api_key.startswith("sk-ant-oat") or (cfg.spec_id == "anthropic" and cfg.api_key.startswith("ey"))):
+            cfg.auth = AuthStyle.BEARER
 
         self._cur = cfg
         is_custom = cfg.spec_id is None
@@ -355,8 +373,8 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
         det_row = q("#p-detected-row")
         if detected_match:
             det_row.display = True
-            q("#p-detected-title", Static).update(f"Local subscription: {detected_match.service}")
-            q("#p-detected-desc", Static).update(f"{detected_match.source_label} - {detected_match.account_info}")
+            q("#p-detected-title", Static).update(_clean_privacy_text(f"Local subscription: {detected_match.service}"))
+            q("#p-detected-desc", Static).update(_clean_privacy_text(f"{detected_match.source_label} - {detected_match.account_info}"))
         else:
             det_row.display = False
 
@@ -510,14 +528,18 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
             temp = float(q("#p-temp", Input).value or 0.2)
         except ValueError:
             temp = 0.2
+        api_key_str = str(q("#p-key", Input).value or "").strip()
+        auth_style_val = AuthStyle(sel_value(q("#p-auth", Select)) or cur.auth.value)
+        if api_key_str.startswith("sk-ant-oat"):
+            auth_style_val = AuthStyle.BEARER
         return ProviderConfig(
             key=cur.key,
             name=q("#p-name", Input).value.strip() if cur.spec_id is None else cur.name,
             spec_id=cur.spec_id,
             scheme=ApiScheme(sel_value(q("#p-scheme", Select)) or cur.scheme.value),
             base_url=q("#p-url", Input).value.strip(),
-            api_key=q("#p-key", Input).value,
-            auth=AuthStyle(sel_value(q("#p-auth", Select)) or cur.auth.value),
+            api_key=api_key_str,
+            auth=auth_style_val,
             auth_header_name=q("#p-auth-name", Input).value.strip(),
             model=(
                 q("#p-model", Input).value.strip()
