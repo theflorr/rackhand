@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import re
+import time
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from rich.console import Group
@@ -10,6 +14,12 @@ from textual.widget import Widget
 from textual.widgets import Input
 
 from agents import AGENTS
+from ui.clipboard import (
+    PastedTextBlock,
+    get_system_clipboard_image,
+    get_system_clipboard_text,
+    save_clipboard_image,
+)
 
 
 @dataclass
@@ -68,6 +78,7 @@ def get_suggestions(raw_text: str, app: Any = None) -> list[CommandSuggestion]:
 
         # Top-level slash commands
         all_cmds = [
+            CommandSuggestion("/init", "/init", "Identify connected devices, verify access, and audit basic config overview", completion="/init"),
             CommandSuggestion("/plan", "/plan", "Enter plan mode (device discovery, read-only inspection, task planning)", completion="/plan"),
             CommandSuggestion("/build", "/build", "Exit plan mode to normal execution (apply changes & run tasks)", completion="/build"),
             CommandSuggestion("/compact", "/compact", "Summarize conversation checkpoint, clear history, and continue", completion="/compact"),
@@ -268,6 +279,141 @@ class PromptInput(Input):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.suggestions_box: Optional[CommandSuggestionsBox] = None
+        self._pasted_blocks: list[PastedTextBlock] = []
+        self._pasted_images: dict[str, Path] = {}
+        self._image_counter: int = 0
+        self._last_paste_text: str = ""
+        self._last_paste_time: float = 0.0
+
+    @property
+    def _value(self) -> Text:
+        """Value rendered with stylish pills for image tags and pasted text blocks."""
+        t = Text(self.value, no_wrap=True, overflow="ignore", end="")
+        for m in re.finditer(r"\[IMAGE #\d+\]", self.value):
+            t.stylize("bold #38bdf8 on #0f2744", m.start(), m.end())
+        for m in re.finditer(r"\[\d+ (?:characters|chars|lines)\]", self.value):
+            t.stylize("bold #cbd5e1 on #27272a", m.start(), m.end())
+        return t
+
+    def _insert_token_or_text(self, text: str) -> None:
+        try:
+            if not self.selection.is_empty:
+                self.replace(text, *self.selection)
+                return
+        except Exception:
+            pass
+
+        try:
+            self.insert_text_at_cursor(text)
+        except Exception:
+            self.value += text
+
+    def _handle_pasted_text(self, text: str) -> None:
+        if not text:
+            return
+        # Debounce rapid duplicate paste events between terminal bracketed paste and key action
+        now = time.monotonic()
+        if text == self._last_paste_text and (now - self._last_paste_time) < 0.4:
+            return
+        self._last_paste_text = text
+        self._last_paste_time = now
+
+        lines = text.splitlines()
+        # Trigger pasted text block if over 45 characters or multiline
+        if len(text) > 45 or len(lines) > 2:
+            count = len(text)
+            tag = f"[{count} characters]"
+            self._pasted_blocks.append(PastedTextBlock(tag=tag, content=text, line_count=count))
+            self._insert_token_or_text(tag)
+        else:
+            # Short text paste
+            line_str = " ".join(lines) if len(lines) == 2 else (lines[0] if lines else "")
+            self._insert_token_or_text(line_str)
+        self._update_suggestions()
+
+    def _handle_pasted_image(self, img: Any) -> None:
+        self._image_counter += 1
+        tag = f"[IMAGE #{self._image_counter}]"
+        sess_id = getattr(getattr(self, "app", None), "active_session_id", None)
+        saved_path = save_clipboard_image(img, session_id=sess_id, index=self._image_counter)
+        self._pasted_images[tag] = saved_path
+        self._insert_token_or_text(tag)
+        self._update_suggestions()
+        if hasattr(self, "app") and hasattr(self.app, "notify"):
+            try:
+                w, h = getattr(img, "size", (0, 0))
+                self.app.notify(f"Image pasted as {tag} ({w}x{h})", title="Image Attached")
+            except Exception:
+                pass
+
+    def _on_paste(self, event: events.Paste) -> None:
+        event.prevent_default()
+        event.stop()
+        if getattr(event, "_handled_by_prompt", False):
+            return
+        event._handled_by_prompt = True
+        if event.text:
+            self._handle_pasted_text(event.text)
+        else:
+            img = get_system_clipboard_image()
+            if img is not None:
+                self._handle_pasted_image(img)
+
+    def on_paste(self, event: events.Paste) -> None:
+        self._on_paste(event)
+
+    def action_paste(self) -> None:
+        """Paste from system clipboard, checking for image first, then text."""
+        img = get_system_clipboard_image()
+        if img is not None:
+            self._handle_pasted_image(img)
+            return
+
+        text = get_system_clipboard_text(getattr(self, "app", None))
+        if text:
+            self._handle_pasted_text(text)
+            return
+
+    def resolve_for_submission(self, text: str) -> tuple[str, str, dict[str, str]]:
+        """Resolve prompt text for submission.
+
+        Returns:
+            display_text: Preserves neat tokens like [87 characters] and [IMAGE #1] for chat UI.
+            expanded_text: Expands [87 characters] to full text and links [IMAGE #1] for the agent.
+            attached_images: Map of image token -> saved local image path.
+        """
+        display_text = text
+        expanded_text = text
+
+        blocks_by_tag: dict[str, deque[str]] = {}
+        for block in self._pasted_blocks:
+            if block.tag not in blocks_by_tag:
+                blocks_by_tag[block.tag] = deque()
+            blocks_by_tag[block.tag].append(block.content)
+
+        def _replace_block(m: re.Match) -> str:
+            token = m.group(0)
+            q = blocks_by_tag.get(token)
+            if q and len(q) > 0:
+                return q.popleft()
+            return token
+
+        expanded_text = re.sub(r"\[\d+ (?:characters|chars|lines)\]", _replace_block, expanded_text)
+
+        attached_images: dict[str, str] = {}
+        for tag, img_path in list(self._pasted_images.items()):
+            if tag in display_text:
+                attached_images[tag] = str(img_path)
+                expanded_text = expanded_text.replace(tag, f"{tag} (attached image file: {img_path})")
+
+        return display_text, expanded_text, attached_images
+
+    def clear_pasted_data(self) -> None:
+        self._pasted_blocks.clear()
+        self._pasted_images.clear()
+        self._image_counter = 0
+        self._last_paste_text = ""
+        self._last_paste_time = 0.0
 
     def apply_completion(self, sel: CommandSuggestion) -> None:
         completion = sel.get_completion()

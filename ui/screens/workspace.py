@@ -1182,7 +1182,16 @@ class WorkspaceScreen(Screen):
         app = self.app
         if not text or self._busy:
             return
+
+        p_inp: Optional[PromptInput] = None
+        try:
+            p_inp = self.query_one("#prompt", PromptInput)
+        except Exception:
+            pass
+
         if text.startswith("/"):
+            if p_inp:
+                p_inp.clear_pasted_data()
             self.query_one("#prompt", Input).value = ""
             self._handle_command(text)
             return
@@ -1193,13 +1202,23 @@ class WorkspaceScreen(Screen):
             self.notify("Choose a model first (F2).", severity="warning")
             self.action_model()
             return
+
+        display_text = text
+        expanded_text = text
+        attached_images: dict[str, str] = {}
+        if p_inp:
+            display_text, expanded_text, attached_images = p_inp.resolve_for_submission(text)
+            p_inp.clear_pasted_data()
+
         self.query_one("#prompt", Input).value = ""
-        user_msg = UserMessage(text)
+        user_msg = UserMessage(display_text, attachments={"images": attached_images} if attached_images else None)
         self._mount_message(user_msg)
         self._persist_session(self.active_session_id)
         if hasattr(self.app, "backend") and hasattr(self.app.backend, "append_session_transcript") and self.active_chat_session:
             t_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            entry = f"### [{t_stamp}] USER\n{text}"
+            entry = f"### [{t_stamp}] USER\n{display_text}"
+            if attached_images:
+                entry += f"\nAttached images: {attached_images}"
             try:
                 self.run_worker(
                     self.app.backend.append_session_transcript(self.active_chat_session, entry, getattr(self.app, "settings", None)),
@@ -1207,7 +1226,7 @@ class WorkspaceScreen(Screen):
                 )
             except Exception:
                 pass
-        self._run_agent(text)
+        self._run_agent(expanded_text)
 
     @on(Select.Changed, "#agent-select")
     def _agent_select_changed(self, ev: Select.Changed) -> None:
@@ -1231,6 +1250,10 @@ class WorkspaceScreen(Screen):
             return
         cmd = parts[0].lower()
         args = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd in ("init", "initialize", "discover"):
+            self.action_init()
+            return
 
         if cmd == "plan":
             if self.current_mode == "plan":
@@ -1334,6 +1357,8 @@ class WorkspaceScreen(Screen):
         if cmd in ("help", "?"):
             help_text = Text()
             help_text.append("RACKHAND CLI COMMANDS\n\n", style="bold white")
+            help_text.append("/init", style="bold white")
+            help_text.append("               Identify connected devices, verify access & audit baseline\n", style="dim")
             help_text.append("/plan", style="bold white")
             help_text.append("              Enter plan mode (discovery, read-only inspection, task planning)\n", style="dim")
             help_text.append("/build", style="bold white")
@@ -1865,6 +1890,62 @@ class WorkspaceScreen(Screen):
     @on(Button.Pressed, "#btn-model")
     def _btn_model(self) -> None:
         self.action_model()
+
+    def action_init(self) -> None:
+        """Run device discovery, verify CLI access, and audit baseline configuration."""
+        if self._busy:
+            self.notify("Agent is currently busy. Please wait for execution to complete.", severity="warning")
+            return
+
+        app = self.app
+        if app.active is None and not getattr(app, "sessions", []):
+            self.notify("Connect a device first (Ctrl+N).", severity="warning")
+            self._bubble(Panel(
+                Text("No device is currently connected.\nConnect a serial console or SSH session (Ctrl+N) to run device initialization and baseline discovery.", style="dim"),
+                title="Device Initialization",
+                border_style="#3f3f46",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            ))
+            return
+
+        prov = getattr(app, "provider", None)
+        if not prov:
+            self.notify("Choose a model first (F2).", severity="warning")
+            self.action_model()
+            return
+
+        dev = app.active
+        dev_label = dev.hostname or (dev.profile.name if dev and dev.profile else "device")
+        transport_label = dev.profile.transport.value.upper() if dev and dev.profile else "CLI"
+
+        init_banner = (
+            f"### Device Initialization & Baseline Discovery · `{dev_label}`\n\n"
+            f"Starting automated hardware audit and connectivity verification over **{transport_label}**:\n"
+            "- Verifying CLI prompt response latency and privilege mode\n"
+            "- Querying hardware model, OS version, serial number, and uptime\n"
+            "- Auditing interface states, IP addressing, and operational status\n"
+            "- Inspecting VLANs, active routing table, and management path\n"
+            "- Compiling an executive baseline overview for upcoming tasks"
+        )
+        self._mount_message(AssistantMessage(markdown=init_banner))
+
+        sess = self.active_chat_session
+        if sess and not sess.has_prompt and not sess.title:
+            sess.title = f"Init: {dev_label}"
+            self.refresh_session_list()
+            self.update_bars()
+            self._persist_session(sess.id)
+
+        init_prompt = (
+            f"Perform comprehensive device initialization and baseline configuration discovery on {dev_label}:\n"
+            "1. Verify CLI connectivity, prompt readiness, and execution privilege level (EXEC vs Privileged/Config).\n"
+            "2. Identify the hardware platform, chassis/model, firmware/OS version, serial number, and uptime.\n"
+            "3. Audit all network interfaces, operational up/down status, and assigned IP addresses.\n"
+            "4. Check active VLANs, default gateway, and routing table overview.\n"
+            "5. Provide a structured, high-density baseline summary outlining what you are working with and confirm device readiness for configuration or troubleshooting."
+        )
+        self._run_agent(init_prompt)
 
     def action_compact(self) -> None:
         if self._busy:

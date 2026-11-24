@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -103,32 +104,46 @@ class GenericMessage(ChatMessage):
 
 
 class UserMessage(ChatMessage):
-    def __init__(self, text: str):
+    def __init__(self, text: str, attachments: Optional[dict[str, Any]] = None):
         super().__init__(css_class="user")
         self.text = text
+        self.attachments: dict[str, Any] = attachments or {}
 
     def render(self) -> Text:
         t = Text()
         t.append("you", style="bold white")
         t.append(f"  {self.created_at.strftime('%H:%M')}\n", style="dim")
-        t.append(self.text, style="white")
+        # Render text with badge highlights for [IMAGE #N] and [N characters/lines]
+        parts = re.split(r"(\[IMAGE #\d+\]|\[\d+ (?:characters|chars|lines)\])", self.text)
+        for part in parts:
+            if not part:
+                continue
+            if re.match(r"^\[IMAGE #\d+\]$", part):
+                t.append(part, style="bold #38bdf8 on #0f2744")
+            elif re.match(r"^\[\d+ (?:characters|chars|lines)\]$", part):
+                t.append(part, style="bold #cbd5e1 on #27272a")
+            else:
+                t.append(part, style="white")
         return t
 
     def clone(self) -> UserMessage:
-        msg = UserMessage(self.text)
+        msg = UserMessage(self.text, attachments=dict(self.attachments))
         msg.created_at = self.created_at
         return msg
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "type": "user",
             "text": self.text,
             "created_at": self.created_at.isoformat(),
         }
+        if self.attachments:
+            d["attachments"] = self.attachments
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> UserMessage:
-        msg = cls(data.get("text", ""))
+        msg = cls(data.get("text", ""), attachments=data.get("attachments"))
         if "created_at" in data:
             try:
                 msg.created_at = datetime.fromisoformat(data["created_at"])
