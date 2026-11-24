@@ -12,7 +12,7 @@ Rackhand connects LLM agents directly to the device, so you don't have to relay 
 
 Grab the standalone Windows executable from **[GitHub Releases](https://github.com/theflorr/rackhand/releases)**.  
 No Python installation or dependencies required: download `rackhand.exe` and run it.
-All versions before v1.2 is EOF and is not recommended for use
+All versions before v1.2 is EOF and is not recommended for use. 
 
 ---
 
