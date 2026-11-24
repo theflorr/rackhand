@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -211,34 +212,117 @@ async def download_update(
         return False
 
 
+def _get_process_exe_windows(pid: int) -> Optional[Path]:
+    """Retrieve full executable image path for a given process ID on Windows using kernel32."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(buf))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                p = Path(buf.value).resolve()
+                if p.is_file():
+                    return p
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    return None
+
+
+def _is_python_runtime(name: str) -> bool:
+    n = name.lower()
+    return n.startswith("python") or n.startswith("pypy")
+
+
+def find_current_executable() -> Optional[Path]:
+    """Find the path to the running rackhand executable across PyApp, PyInstaller, or custom locations."""
+    # 1. PyApp passes exact launcher path in PYAPP env var when PYAPP_PASS_LOCATION=1
+    pyapp_env = os.environ.get("PYAPP", "").strip()
+    if pyapp_env and pyapp_env != "1":
+        cand = Path(pyapp_env).resolve()
+        if cand.is_file() and not _is_python_runtime(cand.name):
+            return cand
+
+    # 2. Check sys.frozen (PyInstaller standalone binary)
+    if getattr(sys, "frozen", False):
+        cand = Path(sys.executable).resolve()
+        if cand.is_file():
+            return cand
+
+    # 3. Check sys.executable if it is rackhand.exe (or anything other than python runtime)
+    cand = Path(sys.executable).resolve()
+    if cand.is_file() and not _is_python_runtime(cand.name):
+        return cand
+
+    # 4. Check parent process on Windows (PyApp launcher process is parent of python runtime)
+    if sys.platform == "win32":
+        try:
+            ppid = os.getppid()
+            if ppid > 0:
+                parent_exe = _get_process_exe_windows(ppid)
+                if parent_exe and parent_exe.is_file() and not _is_python_runtime(parent_exe.name):
+                    return parent_exe
+        except Exception:
+            pass
+
+    # 5. Look for rackhand.exe in current working directory or system PATH
+    cwd_exe = Path.cwd() / "rackhand.exe"
+    if cwd_exe.is_file():
+        return cwd_exe
+
+    which_exe = shutil.which("rackhand.exe")
+    if which_exe:
+        p = Path(which_exe).resolve()
+        if p.is_file():
+            return p
+
+    return None
+
+
 def apply_windows_update_and_restart(new_exe_path: Path) -> None:
     """Spawn an out-of-process helper script to overwrite current exe and restart Rackhand."""
-    current_exe = Path(sys.executable).resolve()
+    current_exe = find_current_executable()
     
-    # If running inside python interpreter rather than compiled exe, don't overwrite python.exe!
-    is_compiled = getattr(sys, "frozen", False) or "rackhand.exe" in current_exe.name.lower()
-    
-    if not is_compiled:
-        # Just notify or move next to it
+    # If running inside plain python development environment, don't overwrite python.exe
+    if not current_exe or not current_exe.is_file() or current_exe.name.lower() in ("python.exe", "pythonw.exe"):
         target_standalone = Path.cwd() / "rackhand.exe"
         if new_exe_path.exists():
-            import shutil
             shutil.move(str(new_exe_path), str(target_standalone))
         return
 
-    # Windows running executables cannot be deleted directly, but can be replaced via a batch loop
+    # Windows running executables cannot be deleted directly while running,
+    # but can be replaced via a batch loop after the process exits.
     batch_script = new_exe_path.parent / "_rackhand_apply_update.cmd"
     batch_content = f"""@echo off
+setlocal enabledelayedexpansion
 timeout /t 1 /nobreak >nul
+set RETRY=0
 :retry
+set /a RETRY+=1
 move /y "{new_exe_path}" "{current_exe}" >nul 2>&1
 if errorlevel 1 (
-    timeout /t 1 /nobreak >nul
-    goto retry
+    if !RETRY! leq 30 (
+        timeout /t 1 /nobreak >nul
+        goto retry
+    )
+    exit /b 1
 )
 start "" "{current_exe}"
 del "%~f0"
 """
-    batch_script.write_text(batch_content, encoding="utf-8")
-    subprocess.Popen(["cmd.exe", "/c", str(batch_script)], close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    batch_script.write_text(batch_content, encoding="ascii", errors="replace")
+    subprocess.Popen(
+        ["cmd.exe", "/c", str(batch_script)],
+        close_fds=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
     sys.exit(0)

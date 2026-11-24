@@ -139,3 +139,38 @@ async def test_check_for_update_triggers_when_tag_has_version_but_title_is_gener
         result = await check_for_update("v1.1")
         assert result is not None
         assert result.version == "v1.1.3"
+
+
+def test_find_current_executable_with_pyapp_env(tmp_path, monkeypatch):
+    from updater import find_current_executable
+    mock_exe = tmp_path / "rackhand.exe"
+    mock_exe.touch()
+    monkeypatch.setenv("PYAPP", str(mock_exe))
+    found = find_current_executable()
+    assert found == mock_exe.resolve()
+
+
+def test_find_current_executable_with_sys_frozen(tmp_path, monkeypatch):
+    import sys
+    from updater import find_current_executable
+    mock_exe = tmp_path / "installed_app.exe"
+    mock_exe.touch()
+    monkeypatch.delenv("PYAPP", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(mock_exe))
+    found = find_current_executable()
+    assert found == mock_exe.resolve()
+
+
+def test_find_current_executable_fallback_when_python_interpreter(monkeypatch):
+    import sys
+    from updater import find_current_executable
+    monkeypatch.delenv("PYAPP", raising=False)
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    # When no rackhand.exe in cwd
+    with monkeypatch.context() as m:
+        m.chdir("/tmp")
+        found = find_current_executable()
+        assert found is None or found.name.lower() == "rackhand.exe"

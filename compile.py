@@ -329,6 +329,7 @@ def compile_pyapp(pyapp_dir: Path, wheel_path: Path, embed_runtime: bool, output
     env["PYAPP_PYTHON_VERSION"] = "3.12"
     env["PYAPP_UV_ENABLED"] = "1"
     env["PYAPP_PIP_EXTRA_ARGS"] = "--force-reinstall"
+    env["PYAPP_PASS_LOCATION"] = "1"
     
     if embed_runtime:
         env["PYAPP_DISTRIBUTION_EMBED"] = "1"
