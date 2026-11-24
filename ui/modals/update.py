@@ -14,7 +14,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, ProgressBar, Static
 
-from updater import ReleaseInfo, apply_windows_update_and_restart, download_update
+from updater import (
+    GITHUB_REPO, ReleaseInfo, apply_windows_update_and_restart, download_update,
+    is_running_from_source,
+)
 
 
 class UpdateModal(ModalScreen[bool]):
@@ -66,10 +69,16 @@ class UpdateModal(ModalScreen[bool]):
     
     BINDINGS = [Binding("escape", "dismiss_modal", "Dismiss")]
 
-    def __init__(self, current_version: str, release: ReleaseInfo) -> None:
+    def __init__(
+        self,
+        current_version: str,
+        release: ReleaseInfo,
+        is_source: Optional[bool] = None,
+    ) -> None:
         super().__init__()
         self.current_version = current_version
         self.release = release
+        self.is_source = is_running_from_source() if is_source is None else is_source
         self.downloaded_path: Optional[Path] = None
 
     def compose(self) -> ComposeResult:
@@ -84,9 +93,11 @@ class UpdateModal(ModalScreen[bool]):
             meta.append(f"{self.current_version}  ", style="bold #e4e4e7")
             meta.append("→  Latest: ", style="dim #71717a")
             meta.append(f"{self.release.title}\n", style="bold #38bdf8")
+            if self.is_source:
+                meta.append("Running from source · Automatic update disabled\n", style="dim #a1a1aa")
             if self.release.published_at:
                 meta.append(f"Released: {self.release.published_at}  ·  ", style="dim #71717a")
-            if self.release.asset_size:
+            if self.release.asset_size and not self.is_source:
                 size_mb = self.release.asset_size / (1024 * 1024)
                 meta.append(f"Size: {size_mb:.1f} MB", style="dim #71717a")
             yield Static(meta, id="update-meta")
@@ -102,10 +113,23 @@ class UpdateModal(ModalScreen[bool]):
 
             with Horizontal(classes="update-buttons"):
                 yield Button("Later", id="btn-later", variant="default")
-                yield Button("Update Now", id="btn-update", variant="primary")
+                if self.is_source:
+                    yield Button("Open Releases", id="btn-releases", variant="primary")
+                else:
+                    yield Button("Update Now", id="btn-update", variant="primary")
 
     @on(Button.Pressed, "#btn-later")
     def action_dismiss_modal(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#btn-releases")
+    def _open_releases(self) -> None:
+        import webbrowser
+        target_url = self.release.html_url or f"https://github.com/{GITHUB_REPO}/releases"
+        try:
+            webbrowser.open(target_url)
+        except Exception:
+            pass
         self.dismiss(False)
 
     @on(Button.Pressed, "#btn-update")

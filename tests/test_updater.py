@@ -174,3 +174,135 @@ def test_find_current_executable_fallback_when_python_interpreter(monkeypatch):
         m.chdir("/tmp")
         found = find_current_executable()
         assert found is None or found.name.lower() == "rackhand.exe"
+
+
+def test_is_running_from_source(monkeypatch):
+    import sys
+    from updater import is_running_from_source
+
+    # Standard python execution without PyApp or PyInstaller
+    monkeypatch.delenv("PYAPP", raising=False)
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    assert is_running_from_source() is True
+
+    # Standalone PyApp binary
+    monkeypatch.setenv("PYAPP", "/home/user/rackhand.exe")
+    assert is_running_from_source() is False
+
+    # PyInstaller frozen binary
+    monkeypatch.delenv("PYAPP", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert is_running_from_source() is False
+
+    # Direct rackhand.exe execution
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setattr(sys, "executable", "C:\\Program Files\\Rackhand\\rackhand.exe")
+    assert is_running_from_source() is False
+
+
+@pytest.mark.asyncio
+async def test_update_modal_source_mode_shows_open_releases_button():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Button
+    from ui.modals.update import UpdateModal
+
+    rel = ReleaseInfo(
+        version="v1.2.0",
+        title="v1.2.0 Release",
+        tag="v1.2.0",
+        html_url="https://github.com/theflorr/rackhand/releases/tag/v1.2.0",
+        asset_name="rackhand.exe",
+        asset_download_url="https://github.com/theflorr/rackhand/releases/download/v1.2.0/rackhand.exe",
+        asset_size=25000000,
+        published_at="2026-11-24",
+        body="Feature update",
+    )
+
+    class TestSourceApp(App):
+        def compose(self) -> ComposeResult:
+            yield UpdateModal(current_version="v1.1.0", release=rel, is_source=True)
+
+    app = TestSourceApp()
+    async with app.run_test() as pilot:
+        modal = app.query_one(UpdateModal)
+        assert modal.is_source is True
+
+        # In source mode: Open Releases button MUST be present
+        btn_rel = modal.query_one("#btn-releases", Button)
+        assert btn_rel is not None
+        assert str(btn_rel.label) == "Open Releases"
+
+        # In source mode: Auto update button ("#btn-update") MUST NOT be present
+        assert len(modal.query("#btn-update")) == 0
+
+
+@pytest.mark.asyncio
+async def test_update_modal_binary_mode_shows_update_now_button():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Button
+    from ui.modals.update import UpdateModal
+
+    rel = ReleaseInfo(
+        version="v1.2.0",
+        title="v1.2.0 Release",
+        tag="v1.2.0",
+        html_url="https://github.com/theflorr/rackhand/releases/tag/v1.2.0",
+        asset_name="rackhand.exe",
+        asset_download_url="https://github.com/theflorr/rackhand/releases/download/v1.2.0/rackhand.exe",
+        asset_size=25000000,
+        published_at="2026-11-24",
+        body="Feature update",
+    )
+
+    class TestBinaryApp(App):
+        def compose(self) -> ComposeResult:
+            yield UpdateModal(current_version="v1.1.0", release=rel, is_source=False)
+
+    app = TestBinaryApp()
+    async with app.run_test() as pilot:
+        modal = app.query_one(UpdateModal)
+        assert modal.is_source is False
+
+        # In binary mode: Update Now button MUST be present
+        btn_up = modal.query_one("#btn-update", Button)
+        assert btn_up is not None
+        assert str(btn_up.label) == "Update Now"
+
+        # In binary mode: Open Releases button MUST NOT be present
+        assert len(modal.query("#btn-releases")) == 0
+
+
+@pytest.mark.asyncio
+async def test_update_modal_open_releases_action():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Button
+    from ui.modals.update import UpdateModal
+
+    rel = ReleaseInfo(
+        version="v1.2.0",
+        title="v1.2.0 Release",
+        tag="v1.2.0",
+        html_url="https://github.com/theflorr/rackhand/releases/tag/v1.2.0",
+        asset_name="rackhand.exe",
+        asset_download_url=None,
+        asset_size=0,
+        published_at="2026-11-24",
+        body="Feature update",
+    )
+
+    class TestModalApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(UpdateModal(current_version="v1.1.0", release=rel, is_source=True))
+
+    app = TestModalApp()
+    opened_urls = []
+    with patch("webbrowser.open", side_effect=lambda url: opened_urls.append(url)):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn_rel = app.screen.query_one("#btn-releases", Button)
+            btn_rel.press()
+            await pilot.pause()
+            assert len(opened_urls) == 1
+            assert opened_urls[0] == "https://github.com/theflorr/rackhand/releases/tag/v1.2.0"
+

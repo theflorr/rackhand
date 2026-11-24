@@ -243,6 +243,36 @@ def _is_python_runtime(name: str) -> bool:
     return n.startswith("python") or n.startswith("pypy")
 
 
+def is_running_from_source() -> bool:
+    """Return True if Rackhand is running directly from source rather than a compiled executable."""
+    # 1. Standalone frozen binary (PyInstaller, cx_Freeze)
+    if getattr(sys, "frozen", False):
+        return False
+
+    # 2. PyApp passes exact launcher path in PYAPP env var
+    pyapp_env = os.environ.get("PYAPP", "").strip()
+    if pyapp_env and pyapp_env != "1":
+        return False
+
+    # 3. Check sys.executable if it is rackhand.exe (or anything other than python runtime)
+    exe_name = Path(sys.executable).name.lower()
+    if not _is_python_runtime(exe_name):
+        return False
+
+    # 4. Check parent process on Windows (PyApp launcher process is parent of python runtime)
+    if sys.platform == "win32":
+        try:
+            ppid = os.getppid()
+            if ppid > 0:
+                parent_exe = _get_process_exe_windows(ppid)
+                if parent_exe and parent_exe.is_file() and not _is_python_runtime(parent_exe.name):
+                    return False
+        except Exception:
+            pass
+
+    return True
+
+
 def find_current_executable() -> Optional[Path]:
     """Find the path to the running rackhand executable across PyApp, PyInstaller, or custom locations."""
     # 1. PyApp passes exact launcher path in PYAPP env var when PYAPP_PASS_LOCATION=1
