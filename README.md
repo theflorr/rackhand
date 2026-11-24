@@ -78,6 +78,11 @@ python compile.py
 
 ---
 
+## Can't run rackhand.exe due to windows policies?
+
+Example image: https://imgur.com/a/ql7n6Rh
+Simply open the rackhand.exe properties and locate the "Remove blocking" at the very bottom and click it.
+
 ### License
 
 Distributed under the [MIT License](LICENSE).
