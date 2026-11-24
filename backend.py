@@ -160,6 +160,10 @@ class Backend(ABC):
     @abstractmethod
     async def cancel_turn(self) -> None: ...
 
+    def inject_mid_turn_prompt(self, session_id: str, prompt: str) -> bool:
+        """Inject a user prompt mid-turn (e.g. via Alt+M)."""
+        return False
+
     @abstractmethod
     async def compact_session(
         self,
@@ -1138,6 +1142,11 @@ class RealBackend(Backend):
             if not fut.done():
                 fut.set_result(ApprovalDecision(False))
         self._approvals.clear()
+
+    def inject_mid_turn_prompt(self, session_id: str, prompt: str) -> bool:
+        if hasattr(self, "_llm_engine") and hasattr(self._llm_engine, "inject_mid_turn_prompt"):
+            return self._llm_engine.inject_mid_turn_prompt(session_id, prompt)
+        return False
 
     async def compact_session(
         self,

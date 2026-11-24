@@ -957,13 +957,39 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
     height: auto;
     margin: 0 1 1 1;
 }
-#composer-box {
+#composer-queue-bar {
+    width: 100%;
     height: 1;
+    background: #0f172a;
+    border-left: outer #f59e0b;
+    padding: 0 1;
+    margin-bottom: 1;
+    align-vertical: middle;
+    display: none;
+}
+#composer-queue-bar.-visible {
+    display: flex;
+}
+#composer-queue-content {
+    width: 1fr;
+    height: 1;
+    color: #e2e8f0;
+}
+#composer-queue-hint {
+    width: auto;
+    height: 1;
+    color: #f59e0b;
+    padding-left: 1;
+}
+#composer-box {
+    height: auto;
+    min-height: 1;
+    max-height: 10;
     background: #101318;
     border: none;
     border-left: outer #2a3545;
     padding: 0 1;
-    align-vertical: middle;
+    align-vertical: top;
 }
 #composer-box:focus-within {
     border-left: outer #4a658a;
@@ -977,7 +1003,9 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 #prompt {
     width: 1fr;
-    height: 1;
+    height: auto;
+    min-height: 1;
+    max-height: 8;
     border: none;
     background: transparent;
     padding: 0;

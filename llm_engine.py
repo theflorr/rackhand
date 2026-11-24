@@ -208,6 +208,101 @@ CLAUDE_STYLE_GUIDELINES = """
 """
 
 
+def build_llm_request(
+    provider: ProviderConfig,
+    messages: list[dict[str, Any]],
+    tools: Optional[list[dict[str, Any]]] = None,
+    settings: Optional[Settings] = None,
+    max_tokens: Optional[int] = None,
+) -> tuple[str, dict[str, str], dict[str, Any], bool]:
+    """Format request URL, headers, and payload according to provider API scheme.
+    
+    Returns (endpoint, headers, payload, is_anthropic).
+    """
+    is_anthropic = (
+        getattr(provider, "scheme", None) == ApiScheme.ANTHROPIC
+        or "anthropic.com" in (provider.base_url or "").lower()
+    )
+
+    base_url = (provider.base_url or ("https://api.anthropic.com" if is_anthropic else "https://api.openai.com/v1")).rstrip("/")
+    api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
+
+    if is_anthropic:
+        if not base_url.endswith("/messages") and not base_url.endswith("/v1"):
+            endpoint = f"{base_url}/v1/messages"
+        elif base_url.endswith("/v1"):
+            endpoint = f"{base_url}/messages"
+        else:
+            endpoint = base_url
+
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        toks = max_tokens if max_tokens is not None else (provider.max_output if provider.max_output and provider.max_output > 0 else 1024)
+        model = provider.model or "claude-3-5-sonnet-20241022"
+
+        # Separate system messages for Anthropic
+        system_texts = [m["content"] for m in messages if m.get("role") == "system" and isinstance(m.get("content"), str)]
+        user_msgs = [m for m in messages if m.get("role") != "system"]
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": user_msgs if user_msgs else [{"role": "user", "content": "hi"}],
+            "max_tokens": toks,
+        }
+        if system_texts:
+            payload["system"] = "\n\n".join(system_texts)
+        if tools:
+            payload["tools"] = tools
+        return endpoint, headers, payload, True
+
+    # Standard OpenAI / OpenRouter / compatible schemes
+    if "chat/completions" not in base_url and not base_url.endswith("/v1"):
+        endpoint = f"{base_url}/chat/completions"
+    elif base_url.endswith("/v1"):
+        endpoint = f"{base_url}/chat/completions"
+    else:
+        endpoint = base_url
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    if "openrouter" in base_url.lower():
+        headers["HTTP-Referer"] = "https://github.com/rackhand"
+        headers["X-Title"] = "Rackhand Network Assistant"
+
+    # Select model
+    model = provider.model or "meta-llama/llama-3.3-70b-instruct"
+    # Bounded max output tokens to prevent OpenRouter 402 quota rejections
+    toks = max_tokens if max_tokens is not None else (provider.max_output if provider.max_output and provider.max_output > 0 else 2048)
+
+    use_tools = tools if tools is not None else (NETWORK_TOOLS if getattr(provider, "supports_tools", False) else None)
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": use_tools,
+        "tool_choice": "auto" if use_tools else None,
+        "max_tokens": toks,
+        "temperature": getattr(provider, "temperature", 0.2),
+    }
+
+    if settings and getattr(settings, "reasoning_effort", None):
+        effort = settings.reasoning_effort
+        if effort not in ("off", "none"):
+            payload["reasoning_effort"] = "high" if effort == "max" else effort
+            if "openrouter" in base_url.lower():
+                payload["reasoning"] = {"effort": effort}
+
+    # Filter None
+    payload = {k: v for k, v in payload.items() if v is not None}
+
+    return endpoint, headers, payload, False
+
+
 class RealLLMEngine:
     """Production LLM agent driver executing real hardware commands via live model inference."""
 
@@ -215,6 +310,11 @@ class RealLLMEngine:
         self.memory = ContextMemoryManager()
         self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         self._agy_conversations: dict[str, str] = {}
+        self._mid_turn_prompts: dict[str, str] = {}
+
+    def inject_mid_turn_prompt(self, session_id: str, prompt: str) -> bool:
+        self._mid_turn_prompts[session_id] = prompt
+        return True
 
     async def aclose(self) -> None:
         await self._http_client.aclose()
@@ -322,6 +422,11 @@ class RealLLMEngine:
 
         # 3. Agent Loop (LLM call -> Tool Execution -> Repeat until done)
         for step in range(max_steps):
+            # Check for mid-turn injected prompt (Alt+M after current tool call or step)
+            injected = self._mid_turn_prompts.pop(sess_id, None)
+            if injected:
+                self.memory.add_message(sess_id, "user", injected)
+
             current_messages = list(self.memory.get_messages(sess_id))
 
             # Build Request Payload based on provider scheme
@@ -843,51 +948,7 @@ class RealLLMEngine:
         settings: Optional[Settings] = None,
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
         """Format request URL, headers, and payload according to API scheme."""
-        base_url = (provider.base_url or "https://api.openai.com/v1").rstrip("/")
-        api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
-
-        # Normalize endpoint
-        if "chat/completions" not in base_url and not base_url.endswith("/v1"):
-            endpoint = f"{base_url}/chat/completions"
-        elif base_url.endswith("/v1"):
-            endpoint = f"{base_url}/chat/completions"
-        else:
-            endpoint = base_url
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        if "openrouter" in base_url.lower():
-            headers["HTTP-Referer"] = "https://github.com/rackhand"
-            headers["X-Title"] = "Rackhand Network Assistant"
-
-        # Select model
-        model = provider.model or "meta-llama/llama-3.3-70b-instruct"
-        # Bounded max output tokens to prevent OpenRouter 402 quota rejections
-        max_tokens = provider.max_output if provider.max_output and provider.max_output > 0 else 2048
-
-        use_tools = tools if tools is not None else (NETWORK_TOOLS if provider.supports_tools else None)
-
-        payload = {
-            "model": model,
-            "messages": messages,
-            "tools": use_tools,
-            "tool_choice": "auto" if use_tools else None,
-            "max_tokens": max_tokens,
-            "temperature": provider.temperature if hasattr(provider, "temperature") else 0.2,
-        }
-
-        if settings and getattr(settings, "reasoning_effort", None):
-            effort = settings.reasoning_effort
-            if effort not in ("off", "none"):
-                payload["reasoning_effort"] = "high" if effort == "max" else effort
-                if "openrouter" in base_url.lower():
-                    payload["reasoning"] = {"effort": effort}
-
-        # Filter None
-        payload = {k: v for k, v in payload.items() if v is not None}
-
+        endpoint, headers, payload, _ = build_llm_request(provider, messages, tools=tools, settings=settings)
         return endpoint, headers, payload
 
     def _format_api_error(self, status: int, body: str, provider: ProviderConfig) -> str:

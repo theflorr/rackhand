@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 import re
@@ -251,6 +252,16 @@ class ConsoleInput(Input):
                 self.cursor_position = len(self.value)
 
 
+@dataclass
+class QueuedPrompt:
+    display_text: str
+    expanded_text: str
+    attached_images: dict[str, str] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.now)
+    immediate: bool = False
+    is_command: bool = False
+
+
 class WorkspaceScreen(Screen):
     """Main working view: devices on the left; Agent / Console / Changes tabs on the right."""
     BINDINGS = [
@@ -260,6 +271,7 @@ class WorkspaceScreen(Screen):
         Binding("ctrl+d", "disconnect", "Disconnect"),
         Binding("ctrl+l", "clear_chat", "Clear"),
         Binding("f4", "focus_prompt", "Focus"),
+        Binding("alt+m", "send_mid_turn", "Send Mid-Turn"),
         Binding("ctrl+q", "app.quit", "Quit"),
     ]
 
@@ -281,6 +293,12 @@ class WorkspaceScreen(Screen):
         self._session_counter: int = 0
         self.active_agent_id: str = "auto"
         self.current_mode: str = "build"
+        self._prompt_queue: list[QueuedPrompt] = []
+        self._pending_mid_turn_msg: Optional[UserMessage] = None
+        self._pending_mid_turn_prompt: Optional[QueuedPrompt] = None
+        self._spinner_timer: Optional[Any] = None
+        self._spinner_idx: int = 0
+        self.SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     def _start_sidebar_drag(self, screen_x: int) -> None:
         self._drag_active = True
@@ -569,6 +587,9 @@ class WorkspaceScreen(Screen):
                     yield VerticalScroll(id="chat")
                     with Vertical(id="composer-container"):
                         yield CommandSuggestionsBox(id="composer-suggestions")
+                        with Horizontal(id="composer-queue-bar"):
+                            yield Static("", id="composer-queue-content")
+                            yield Static("Press ALT+M to send now", id="composer-queue-hint")
                         with Horizontal(id="composer-box"):
                             yield Static("❯", id="prompt-prefix")
                             yield PromptInput(placeholder="Ask anything, edit config, debug the network... (/ for commands)", id="prompt")
@@ -1180,7 +1201,7 @@ class WorkspaceScreen(Screen):
             pass
         text = text.strip()
         app = self.app
-        if not text or self._busy:
+        if not text:
             return
 
         p_inp: Optional[PromptInput] = None
@@ -1192,9 +1213,57 @@ class WorkspaceScreen(Screen):
         if text.startswith("/"):
             if p_inp:
                 p_inp.clear_pasted_data()
-            self.query_one("#prompt", Input).value = ""
+            try:
+                self.query_one("#prompt", Input).value = ""
+            except Exception:
+                pass
+            if self._busy:
+                item = QueuedPrompt(
+                    display_text=text,
+                    expanded_text=text,
+                    attached_images={},
+                    is_command=True,
+                )
+                self._prompt_queue.append(item)
+                self._update_queue_ui()
+                self.notify(f"Command queued ({len(self._prompt_queue)} in queue). Press Alt+M to send now.", title="Command Queued")
+                return
             self._handle_command(text)
             return
+
+        display_text = text
+        expanded_text = text
+        attached_images: dict[str, str] = {}
+        if p_inp and hasattr(p_inp, "resolve_for_submission"):
+            try:
+                res = p_inp.resolve_for_submission(text)
+                if isinstance(res, tuple) and len(res) == 3:
+                    display_text, expanded_text, attached_images = res
+            except Exception:
+                pass
+            if hasattr(p_inp, "clear_pasted_data"):
+                try:
+                    p_inp.clear_pasted_data()
+                except Exception:
+                    pass
+
+        try:
+            self.query_one("#prompt", Input).value = ""
+        except Exception:
+            pass
+
+        # If agent is busy: queue the prompt so it fires after current turn finishes
+        if self._busy:
+            item = QueuedPrompt(
+                display_text=display_text,
+                expanded_text=expanded_text,
+                attached_images=attached_images,
+            )
+            self._prompt_queue.append(item)
+            self._update_queue_ui()
+            self.notify(f"Prompt queued ({len(self._prompt_queue)} in queue). Press Alt+M to send mid-turn.", title="Prompt Queued")
+            return
+
         if app.active is None and self.current_mode != "plan":
             self.notify("Connect a device first (Ctrl+N).", severity="warning")
             return
@@ -1203,14 +1272,9 @@ class WorkspaceScreen(Screen):
             self.action_model()
             return
 
-        display_text = text
-        expanded_text = text
-        attached_images: dict[str, str] = {}
-        if p_inp:
-            display_text, expanded_text, attached_images = p_inp.resolve_for_submission(text)
-            p_inp.clear_pasted_data()
+        self._execute_prompt(display_text, expanded_text, attached_images)
 
-        self.query_one("#prompt", Input).value = ""
+    def _execute_prompt(self, display_text: str, expanded_text: str, attached_images: dict[str, str]) -> None:
         user_msg = UserMessage(display_text, attachments={"images": attached_images} if attached_images else None)
         self._mount_message(user_msg)
         self._persist_session(self.active_session_id)
@@ -1227,6 +1291,155 @@ class WorkspaceScreen(Screen):
             except Exception:
                 pass
         self._run_agent(expanded_text)
+
+    def action_send_mid_turn(self) -> None:
+        """Send queued prompt mid-turn (after current tool call/generation) via Alt+M."""
+        p_inp = None
+        try:
+            p_inp = self.query_one("#prompt", PromptInput)
+        except Exception:
+            pass
+
+        # If prompt field currently has text, resolve and queue it first
+        if p_inp and isinstance(getattr(p_inp, "value", None), str) and p_inp.value.strip():
+            raw = p_inp.value.strip()
+            d_text, e_text, att = raw, raw, {}
+            if hasattr(p_inp, "resolve_for_submission"):
+                try:
+                    res = p_inp.resolve_for_submission(raw)
+                    if isinstance(res, tuple) and len(res) == 3:
+                        d_text, e_text, att = res
+                except Exception:
+                    pass
+            if hasattr(p_inp, "clear_pasted_data"):
+                try:
+                    p_inp.clear_pasted_data()
+                except Exception:
+                    pass
+            try:
+                p_inp.value = ""
+            except Exception:
+                pass
+            self._prompt_queue.insert(0, QueuedPrompt(d_text, e_text, att, immediate=True))
+
+        if not self._prompt_queue:
+            self.notify("No prompt queued to send mid-turn.", severity="information")
+            return
+
+        target = self._prompt_queue.pop(0)
+        target.immediate = True
+        self._update_queue_ui()
+
+        if not self._busy:
+            self._execute_prompt(target.display_text, target.expanded_text, target.attached_images)
+            return
+
+        # Agent is busy: mount message with live loading spinner and queue injection
+        user_msg = UserMessage(
+            target.display_text,
+            attachments={"images": target.attached_images} if target.attached_images else None,
+            status="sending",
+        )
+        self._mount_message(user_msg)
+        self._pending_mid_turn_msg = user_msg
+        self._pending_mid_turn_prompt = target
+
+        if hasattr(self.app, "backend") and hasattr(self.app.backend, "inject_mid_turn_prompt"):
+            self.app.backend.inject_mid_turn_prompt(self.active_session_id or "", target.expanded_text)
+
+        self._start_spinner()
+        self.notify("Sending prompt to agent (will apply after current step/tool)...", title="Sending Mid-Turn")
+
+    def _start_spinner(self) -> None:
+        if self._spinner_timer is None:
+            self._spinner_timer = self.set_interval(0.08, self._tick_spinner)
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_timer:
+            try:
+                self._spinner_timer.stop()
+            except Exception:
+                pass
+            self._spinner_timer = None
+        if self._pending_mid_turn_msg:
+            self._pending_mid_turn_msg.status = "sent"
+            self._pending_mid_turn_msg.update_widget()
+            self._pending_mid_turn_msg = None
+        self._update_queue_ui()
+
+    def _tick_spinner(self) -> None:
+        self._spinner_idx = (self._spinner_idx + 1) % len(self.SPINNER_FRAMES)
+        frame = self.SPINNER_FRAMES[self._spinner_idx]
+        if self._pending_mid_turn_msg:
+            self._pending_mid_turn_msg.spinner_frame = frame
+            self._pending_mid_turn_msg.update_widget()
+        try:
+            stat = self.query_one("#composer-status", Static)
+            stat.update(f"{frame} Sending prompt to agent mid-turn... (Alt+M)")
+        except Exception:
+            pass
+
+    def _dispatch_next_queued(self) -> None:
+        """Dispatch next queued prompt or command in sequential FIFO order."""
+        if not self._prompt_queue or self._busy:
+            return
+        next_item = self._prompt_queue.pop(0)
+        self._update_queue_ui()
+        if getattr(next_item, "is_command", False):
+            self._handle_command(next_item.display_text)
+            if not self._busy and self._prompt_queue:
+                try:
+                    self.set_timer(0.05, self._dispatch_next_queued)
+                except Exception:
+                    self._dispatch_next_queued()
+        else:
+            self._execute_prompt(
+                next_item.display_text,
+                next_item.expanded_text,
+                next_item.attached_images,
+            )
+
+    def _update_queue_ui(self) -> None:
+        try:
+            queue_bar = self.query_one("#composer-queue-bar", Horizontal)
+            queue_content = self.query_one("#composer-queue-content", Static)
+            queue_hint = self.query_one("#composer-queue-hint", Static)
+
+            if self._prompt_queue:
+                queue_bar.display = True
+                queue_bar.add_class("-visible")
+                count = len(self._prompt_queue)
+                items_preview = []
+                for idx, q in enumerate(self._prompt_queue[:3], 1):
+                    preview = q.display_text.replace("\n", " ").strip()
+                    if len(preview) > 30:
+                        preview = preview[:29] + "…"
+                    items_preview.append(f"[bold #38bdf8]{idx}.[/] {preview}")
+                if count > 3:
+                    items_preview.append(f"[dim](+{count - 3} more)[/]")
+
+                content_text = f"[bold #f59e0b]⏳ Queued ({count}):[/] " + "   ".join(items_preview)
+                queue_content.update(content_text)
+                queue_hint.update("[dim #94a3b8]Press [/][bold #fbbf24]ALT+M[/][dim #94a3b8] to send now[/]")
+            else:
+                queue_bar.display = False
+                queue_bar.remove_class("-visible")
+        except Exception:
+            pass
+
+        try:
+            stat = self.query_one("#composer-status", Static)
+            if self._pending_mid_turn_msg:
+                frame = self.SPINNER_FRAMES[self._spinner_idx]
+                stat.update(f"{frame} Sending prompt to agent mid-turn... (Alt+M)")
+            elif self._prompt_queue:
+                count = len(self._prompt_queue)
+                p_text = self._prompt_queue[0].display_text[:30].replace("\n", " ")
+                stat.update(f"⏳ {count} queued: '{p_text}…' (Alt+M to send now)")
+            else:
+                self.update_bars()
+        except Exception:
+            pass
 
     @on(Select.Changed, "#agent-select")
     def _agent_select_changed(self, ev: Select.Changed) -> None:
@@ -1507,6 +1720,17 @@ class WorkspaceScreen(Screen):
                                 self._scroll()
                                 break
 
+                    # If a mid-turn prompt was waiting to send after current tool call, mark it delivered
+                    if self._pending_mid_turn_msg:
+                        self._pending_mid_turn_msg.status = "sent"
+                        self._pending_mid_turn_msg.update_widget()
+                        self._pending_mid_turn_msg = None
+                        self._stop_spinner()
+                        try:
+                            self.notify("Agent received mid-turn prompt.", title="Prompt Injected")
+                        except Exception:
+                            pass
+
                 elif isinstance(ev, AgentProposal):
                     active_assistant_msg = None
                     active_tool_bundle = None
@@ -1536,6 +1760,7 @@ class WorkspaceScreen(Screen):
                                title_align="left"))
         finally:
             self._set_busy(False)
+            self._stop_spinner()
             self._persist_session(self.active_session_id)
             if hasattr(self.app, "backend") and hasattr(self.app.backend, "append_session_transcript") and self.active_chat_session:
                 try:
@@ -1558,6 +1783,13 @@ class WorkspaceScreen(Screen):
                             )
                 except Exception:
                     pass
+
+            # If prompts are queued, fire the next one sequentially in FIFO order
+            if self._prompt_queue and not self._busy:
+                try:
+                    self.set_timer(0.05, self._dispatch_next_queued)
+                except Exception:
+                    self._dispatch_next_queued()
 
     async def _handle_proposal(self, c: ProposedChange) -> None:
         app = self.app
@@ -1894,7 +2126,9 @@ class WorkspaceScreen(Screen):
     def action_init(self) -> None:
         """Run device discovery, verify CLI access, and audit baseline configuration."""
         if self._busy:
-            self.notify("Agent is currently busy. Please wait for execution to complete.", severity="warning")
+            self.notify("Agent is currently busy. Queueing /init command...", severity="information")
+            self._prompt_queue.append(QueuedPrompt(display_text="/init", expanded_text="/init", is_command=True))
+            self._update_queue_ui()
             return
 
         app = self.app
@@ -1949,7 +2183,9 @@ class WorkspaceScreen(Screen):
 
     def action_compact(self) -> None:
         if self._busy:
-            self.notify("Agent is currently busy. Please wait for execution to complete.", severity="warning")
+            self.notify("Agent is currently busy. Queueing /init command...", severity="information")
+            self._prompt_queue.append(QueuedPrompt(display_text="/init", expanded_text="/init", is_command=True))
+            self._update_queue_ui()
             return
         prov = self.app.provider  # type: ignore[attr-defined]
         if not prov:

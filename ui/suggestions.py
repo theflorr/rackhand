@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from rich.console import Group
+from rich.console import Console, Group
 from rich.text import Text
 from textual import events
+from textual.binding import Binding
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Input
 
@@ -276,6 +278,14 @@ class CommandSuggestionsBox(Widget):
 
 
 class PromptInput(Input):
+    BINDINGS = [
+        *Input.BINDINGS,
+        Binding("ctrl+enter", "new_line", "New Line", show=False),
+        Binding("shift+enter", "new_line", "New Line", show=False),
+        Binding("ctrl+j", "new_line", "New Line", show=False),
+        Binding("alt+m", "send_mid_turn", "Send Mid-Turn", show=False),
+    ]
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.suggestions_box: Optional[CommandSuggestionsBox] = None
@@ -294,6 +304,107 @@ class PromptInput(Input):
         for m in re.finditer(r"\[\d+ (?:characters|chars|lines)\]", self.value):
             t.stylize("bold #cbd5e1 on #27272a", m.start(), m.end())
         return t
+
+    def _sync_multiline_height(self) -> None:
+        """Adjust widget height dynamically based on newline count."""
+        lines = self.value.split("\n")
+        h = max(1, min(len(lines), 8))
+        self.styles.height = h
+
+    def action_new_line(self) -> None:
+        """Insert a newline into the prompt field."""
+        self._insert_token_or_text("\n")
+        self._sync_multiline_height()
+
+    def action_send_mid_turn(self) -> None:
+        """Forward Alt+M to active screen."""
+        if hasattr(self, "screen") and hasattr(self.screen, "action_send_mid_turn"):
+            self.screen.action_send_mid_turn()
+        elif hasattr(self, "app") and hasattr(self.app, "screen") and hasattr(self.app.screen, "action_send_mid_turn"):
+            self.app.screen.action_send_mid_turn()
+
+    def _move_cursor_up(self) -> None:
+        lines = self.value.split("\n")
+        cur = self.cursor_position
+        cur_line = 0
+        line_start = 0
+        for i, l in enumerate(lines):
+            l_len = len(l)
+            if line_start <= cur <= line_start + l_len:
+                cur_line = i
+                break
+            line_start += l_len + 1
+        col = cur - line_start
+        if cur_line > 0:
+            prev_line_len = len(lines[cur_line - 1])
+            prev_line_start = sum(len(lines[j]) + 1 for j in range(cur_line - 1))
+            new_col = min(col, prev_line_len)
+            self.cursor_position = prev_line_start + new_col
+
+    def _move_cursor_down(self) -> None:
+        lines = self.value.split("\n")
+        cur = self.cursor_position
+        cur_line = 0
+        line_start = 0
+        for i, l in enumerate(lines):
+            l_len = len(l)
+            if line_start <= cur <= line_start + l_len:
+                cur_line = i
+                break
+            line_start += l_len + 1
+        col = cur - line_start
+        if cur_line < len(lines) - 1:
+            next_line_len = len(lines[cur_line + 1])
+            next_line_start = sum(len(lines[j]) + 1 for j in range(cur_line + 1))
+            new_col = min(col, next_line_len)
+            self.cursor_position = next_line_start + new_col
+
+    def render_line(self, y: int) -> Strip:
+        if not self.value:
+            if y != 0:
+                return Strip.blank(self.size.width, self.rich_style)
+            return super().render_line(y)
+
+        lines = self.value.split("\n")
+        if y >= len(lines):
+            return Strip.blank(self.size.width, self.rich_style)
+
+        line_str = lines[y]
+        console = self.app.console if hasattr(self, "app") and getattr(self, "app", None) else Console()
+        console_options = self.app.console_options if hasattr(self, "app") and getattr(self, "app", None) else console.options
+        max_content_width = self.scrollable_content_region.width if hasattr(self, "scrollable_content_region") else self.size.width
+        max_w = max(max_content_width, len(line_str) + 10, 80)
+
+        t = Text(line_str, no_wrap=True, overflow="ignore", end="")
+        for m in re.finditer(r"\[IMAGE #\d+\]", line_str):
+            t.stylize("bold #38bdf8 on #0f2744", m.start(), m.end())
+        for m in re.finditer(r"\[\d+ (?:characters|chars|lines)\]", line_str):
+            t.stylize("bold #cbd5e1 on #27272a", m.start(), m.end())
+
+        line_start = sum(len(lines[i]) + 1 for i in range(y))
+        line_end = line_start + len(line_str)
+
+        if self.has_focus and self._cursor_visible:
+            if line_start <= self.cursor_position <= line_end:
+                cursor_style = self.get_component_rich_style("input--cursor")
+                cursor = self.cursor_position - line_start
+                if cursor >= len(line_str):
+                    t.pad_right(1)
+                t.stylize(cursor_style, cursor, cursor + 1)
+
+        if self.has_focus and not self.selection.is_empty:
+            sel_start, sel_end = sorted(self.selection)
+            s = max(sel_start, line_start) - line_start
+            e = min(sel_end, line_end) - line_start
+            if s < e:
+                selection_style = self.get_component_rich_style("input--selection")
+                t.stylize_before(selection_style, s, e)
+
+        segments = list(console.render(t, console_options.update_width(max_w)))
+        strip = Strip(segments)
+        scroll_x, _ = self.scroll_offset if hasattr(self, "scroll_offset") else (0, 0)
+        strip = strip.crop(scroll_x, scroll_x + max_w)
+        return strip.apply_style(self.rich_style)
 
     def _insert_token_or_text(self, text: str) -> None:
         try:
@@ -423,20 +534,31 @@ class PromptInput(Input):
         self.focus()
 
     def on_key(self, event: events.Key) -> None:
-        if not self.suggestions_box:
+        if event.key in ("ctrl+enter", "shift+enter", "ctrl+j"):
+            event.prevent_default()
+            event.stop()
+            self.action_new_line()
+            return
+
+        if event.key in ("alt+m", "escape+m"):
+            event.prevent_default()
+            event.stop()
+            self.action_send_mid_turn()
             return
 
         box = self.suggestions_box
 
         if event.key == "tab":
-            event.prevent_default()
-            event.stop()
-            if box.is_active:
+            if box and box.is_active:
+                event.prevent_default()
+                event.stop()
                 sel = box.get_selected()
                 if sel:
                     self.apply_completion(sel)
                     return
             else:
+                event.prevent_default()
+                event.stop()
                 if not self.value:
                     self.value = "/"
                     self.cursor_position = 1
@@ -444,28 +566,38 @@ class PromptInput(Input):
                 return
 
         elif event.key == "up":
-            if box.is_active:
+            if box and box.is_active:
                 event.prevent_default()
                 event.stop()
                 box.move_selection(-1)
                 return
+            elif "\n" in self.value:
+                event.prevent_default()
+                event.stop()
+                self._move_cursor_up()
+                return
 
         elif event.key == "down":
-            if box.is_active:
+            if box and box.is_active:
                 event.prevent_default()
                 event.stop()
                 box.move_selection(1)
                 return
+            elif "\n" in self.value:
+                event.prevent_default()
+                event.stop()
+                self._move_cursor_down()
+                return
 
         elif event.key == "escape":
-            if box.is_active:
+            if box and box.is_active:
                 event.prevent_default()
                 event.stop()
                 box.hide_suggestions()
                 return
 
         elif event.key == "enter":
-            if box.is_active:
+            if box and box.is_active:
                 sel = box.get_selected()
                 if sel and self.value.strip().lower() != sel.value.lower():
                     if not sel.value.endswith(" "):
@@ -473,6 +605,7 @@ class PromptInput(Input):
                 box.hide_suggestions()
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        self._sync_multiline_height()
         self._update_suggestions()
 
     def _update_suggestions(self) -> None:

@@ -104,15 +104,27 @@ class GenericMessage(ChatMessage):
 
 
 class UserMessage(ChatMessage):
-    def __init__(self, text: str, attachments: Optional[dict[str, Any]] = None):
+    def __init__(
+        self,
+        text: str,
+        attachments: Optional[dict[str, Any]] = None,
+        status: Optional[str] = None,
+    ):
         super().__init__(css_class="user")
         self.text = text
         self.attachments: dict[str, Any] = attachments or {}
+        self.status: Optional[str] = status  # None, "sending", "sent"
+        self.spinner_frame: str = "⠋"
 
     def render(self) -> Text:
         t = Text()
         t.append("you", style="bold white")
-        t.append(f"  {self.created_at.strftime('%H:%M')}\n", style="dim")
+        t.append(f"  {self.created_at.strftime('%H:%M')}", style="dim")
+        if self.status == "sending":
+            t.append(f"  {self.spinner_frame} Sending to agent...", style="bold #38bdf8")
+        elif self.status == "sent":
+            t.append("  ✓ Sent to agent", style="dim #22c55e")
+        t.append("\n")
         # Render text with badge highlights for [IMAGE #N] and [N characters/lines]
         parts = re.split(r"(\[IMAGE #\d+\]|\[\d+ (?:characters|chars|lines)\])", self.text)
         for part in parts:
@@ -127,7 +139,7 @@ class UserMessage(ChatMessage):
         return t
 
     def clone(self) -> UserMessage:
-        msg = UserMessage(self.text, attachments=dict(self.attachments))
+        msg = UserMessage(self.text, attachments=dict(self.attachments), status=self.status)
         msg.created_at = self.created_at
         return msg
 
@@ -139,11 +151,13 @@ class UserMessage(ChatMessage):
         }
         if self.attachments:
             d["attachments"] = self.attachments
+        if self.status:
+            d["status"] = self.status
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> UserMessage:
-        msg = cls(data.get("text", ""), attachments=data.get("attachments"))
+        msg = cls(data.get("text", ""), attachments=data.get("attachments"), status=data.get("status"))
         if "created_at" in data:
             try:
                 msg.created_at = datetime.fromisoformat(data["created_at"])
