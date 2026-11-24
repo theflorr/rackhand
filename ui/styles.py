@@ -968,7 +968,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
     display: none;
 }
 #composer-queue-bar.-visible {
-    display: flex;
+    display: block;
 }
 #composer-queue-content {
     width: 1fr;
