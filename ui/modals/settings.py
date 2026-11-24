@@ -128,9 +128,28 @@ class SettingsModal(ModalScreen[Optional[Settings]]):
                         yield Input(s.transcript_dir, id="s-dir")
                         yield Static("Path where session audit logs are stored.", classes="settings-field-help")
 
+                # 5. Encrypted Vault Security
+                with Vertical(classes="settings-card"):
+                    with Vertical(classes="settings-card-header"):
+                        yield Static("VAULT & SECURITY", classes="settings-card-title")
+                        yield Static("Local cryptographic master passphrase and data key.", classes="settings-card-desc")
+
+                    with Vertical(classes="settings-item"):
+                        yield Label("Vault Status", classes="settings-field-lbl")
+                        yield Static("Encrypted (XChaCha20-Poly1305 + Argon2id)", id="s-vault-status")
+                        yield Static("All settings, credentials, keys, sessions, and backups are secured in your vault.", classes="settings-field-help")
+
+                    with Horizontal(classes="sidebar-btn-row"):
+                        yield Button("Change master passphrase", id="s-btn-change-passphrase")
+
             with Horizontal(classes="settings-btn-row"):
                 yield Button("Save settings", variant="primary", id="s-save")
                 yield Button("Cancel", id="s-cancel")
+
+    @on(Button.Pressed, "#s-btn-change-passphrase")
+    def _change_passphrase(self) -> None:
+        from ui.modals.vault import VaultChangePassphraseModal
+        self.app.push_screen(VaultChangePassphraseModal())
 
     def action_cancel(self) -> None:
         self.dismiss(None)

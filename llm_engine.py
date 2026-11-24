@@ -713,6 +713,23 @@ class RealLLMEngine:
         elif effort == "max":
             effort = "xhigh"
 
+        # Honor /effort first: auto change model variant to match configured effort
+        m_pattern = re.compile(r'^(.*?)-(low|medium|high|xhigh|max)$', re.IGNORECASE)
+        m_match = m_pattern.match(model)
+        if m_match:
+            base_model = m_match.group(1)
+            if effort in ("off", "none", "low"):
+                target_suffix = "low"
+            elif effort in ("high", "max", "xhigh"):
+                target_suffix = "high"
+            else:
+                target_suffix = "medium"
+            new_model = f"{base_model}-{target_suffix}"
+            if new_model.lower() != model.lower():
+                model = new_model
+                if provider:
+                    provider.model = new_model
+
         agy_bin = ensure_agy_in_path(getattr(provider, "api_key", None))
         if not agy_bin:
             yield AgentError(
@@ -742,9 +759,34 @@ class RealLLMEngine:
 
             if proc.returncode != 0:
                 err_text = stderr.decode("utf-8", errors="replace").strip() or stdout.decode("utf-8", errors="replace").strip()
-                yield AgentError(f"{badge} AGY CLI error: {err_text[:200]}")
-                yield AgentDone(total_prompt_tokens, total_completion_tokens)
-                return
+                # If AGY CLI reported a conflict between --model and --effort:
+                if ("conflicts with --effort" in err_text or "invalid model selection" in err_text) and m_pattern.match(model):
+                    m_err = m_pattern.match(model)
+                    if m_err:
+                        base = m_err.group(1)
+                        target = "low" if effort in ("off", "none", "low") else ("high" if effort in ("high", "max", "xhigh") else "medium")
+                        model = f"{base}-{target}"
+                        if provider:
+                            provider.model = model
+                        retry_cmd = [agy_bin, "--output-format", "json", "--effort", effort, "--model", model]
+                        if cid:
+                            retry_cmd.extend(["--conversation", cid])
+                        retry_cmd.extend(["-p", current_prompt])
+                        try:
+                            retry_proc = await asyncio.create_subprocess_exec(
+                                *retry_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
+                            stdout, stderr = await retry_proc.communicate()
+                            proc = retry_proc
+                        except Exception:
+                            pass
+                if proc.returncode != 0:
+                    err_text = stderr.decode("utf-8", errors="replace").strip() or stdout.decode("utf-8", errors="replace").strip()
+                    yield AgentError(f"{badge} AGY CLI error: {err_text[:200]}")
+                    yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                    return
 
             try:
                 data = json.loads(stdout.decode("utf-8", errors="replace"))
@@ -1011,8 +1053,12 @@ class RealLLMEngine:
                 logger.error("AGY call_llm_stateless: agy executable not found")
                 return None
             model = provider.model or "gemini-3.8-flash-low"
+            stateless_effort = "low"
+            m_stateless = re.match(r'^(.*?)-(low|medium|high|xhigh|max)$', model, re.IGNORECASE)
+            if m_stateless:
+                model = f"{m_stateless.group(1)}-low"
             full_prompt = f"{system_prompt}\n\n{user_prompt}"
-            cmd = [agy_bin, "--output-format", "json", "--effort", "low", "--model", model, "-p", full_prompt]
+            cmd = [agy_bin, "--output-format", "json", "--effort", stateless_effort, "--model", model, "-p", full_prompt]
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,

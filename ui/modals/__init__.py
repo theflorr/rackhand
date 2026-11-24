@@ -7,6 +7,12 @@ from ui.modals.providers import ProvidersScreen
 from ui.modals.settings import SettingsModal
 from ui.modals.update import UpdateModal
 from ui.modals.usage import UsageModal
+from ui.modals.vault import (
+    VaultChangePassphraseModal,
+    VaultSetupModal,
+    VaultUnlockModal,
+    VaultWipeConfirmModal,
+)
 
 __all__ = [
     "AgentPickerModal",
@@ -16,4 +22,8 @@ __all__ = [
     "SettingsModal",
     "UpdateModal",
     "UsageModal",
+    "VaultChangePassphraseModal",
+    "VaultSetupModal",
+    "VaultUnlockModal",
+    "VaultWipeConfirmModal",
 ]

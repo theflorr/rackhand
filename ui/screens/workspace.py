@@ -729,6 +729,20 @@ class WorkspaceScreen(Screen):
                                 yield Input("~/.rackhand/transcripts", id="ws-s-dir")
                                 yield Static("Path where session audit logs are stored.", classes="settings-field-help")
 
+                        # 5. Encrypted Vault Security
+                        with Vertical(classes="settings-card"):
+                            with Vertical(classes="settings-card-header"):
+                                yield Static("VAULT & SECURITY", classes="settings-card-title")
+                                yield Static("Local cryptographic master passphrase and data key.", classes="settings-card-desc")
+
+                            with Vertical(classes="settings-item"):
+                                yield Label("Vault Status", classes="settings-field-lbl")
+                                yield Static("Encrypted (XChaCha20-Poly1305 + Argon2id)", id="ws-vault-status")
+                                yield Static("All settings, credentials, keys, sessions, and backups are secured in your vault.", classes="settings-field-help")
+
+                            with Horizontal(classes="sidebar-btn-row"):
+                                yield Button("Change master passphrase", id="ws-btn-change-passphrase")
+
                         with Horizontal(classes="settings-btn-row"):
                             yield Button("Save settings", variant="primary", id="ws-s-save")
                             yield Button("Reset defaults", id="ws-s-reset")
@@ -768,6 +782,8 @@ class WorkspaceScreen(Screen):
         self.refresh_device_list()
         self.refresh_console_devices()
         self._render_console()
+        cur_effort = getattr(self.app.settings, "reasoning_effort", "medium") or "medium"
+        self._sync_provider_model_variant(cur_effort)
         self.update_bars()
         self._load_settings_tab()
         try:
@@ -1409,16 +1425,16 @@ class WorkspaceScreen(Screen):
                 queue_bar.display = True
                 queue_bar.add_class("-visible")
                 count = len(self._prompt_queue)
-                items_preview = []
-                for idx, q in enumerate(self._prompt_queue[:3], 1):
+                lines = []
+                for idx, q in enumerate(self._prompt_queue[:4], 1):
                     preview = q.display_text.replace("\n", " ").strip()
-                    if len(preview) > 30:
-                        preview = preview[:29] + "…"
-                    items_preview.append(f"[bold #38bdf8]{idx}.[/] {preview}")
-                if count > 3:
-                    items_preview.append(f"[dim](+{count - 3} more)[/]")
+                    if len(preview) > 60:
+                        preview = preview[:59] + "…"
+                    lines.append(f"[bold #f59e0b]◈[/] [bold #38bdf8]{idx}.[/] {preview}")
+                if count > 4:
+                    lines.append(f"  [dim #94a3b8]↳ +{count - 4} more queued[/]")
 
-                content_text = f"[bold #f59e0b]⏳ Queued ({count}):[/] " + "   ".join(items_preview)
+                content_text = "\n".join(lines)
                 queue_content.update(content_text)
                 queue_hint.update("[dim #94a3b8]Press [/][bold #fbbf24]ALT+M[/][dim #94a3b8] to send now[/]")
             else:
@@ -1435,7 +1451,7 @@ class WorkspaceScreen(Screen):
             elif self._prompt_queue:
                 count = len(self._prompt_queue)
                 p_text = self._prompt_queue[0].display_text[:30].replace("\n", " ")
-                stat.update(f"⏳ {count} queued: '{p_text}…' (Alt+M to send now)")
+                stat.update(f"◈ {count} queued: '{p_text}…' (Alt+M to send now)")
             else:
                 self.update_bars()
         except Exception:
@@ -1659,6 +1675,9 @@ class WorkspaceScreen(Screen):
         app = self.app
         backend: Backend = app.backend  # type: ignore[attr-defined]
         self._set_busy(True)
+        # Honor /effort first: ensure model variant matches active reasoning effort
+        cur_effort = getattr(app.settings, "reasoning_effort", "medium") or "medium"
+        self._sync_provider_model_variant(cur_effort)
         # Trigger AI session title generation on first prompt if not yet generated
         active_sess = self.active_chat_session
         if active_sess and not active_sess.has_prompt:
@@ -1909,8 +1928,10 @@ class WorkspaceScreen(Screen):
     def _on_provider(self, cfg: Optional[ProviderConfig]) -> None:
         if cfg:
             self.app.provider = cfg  # type: ignore[attr-defined]
+            cur_effort = getattr(self.app.settings, "reasoning_effort", "medium") or "medium"
+            self._sync_provider_model_variant(cur_effort)
             self.update_bars()
-            self.notify(cfg.label, title="Model Set")
+            self.notify(self.app.provider.label if getattr(self.app, "provider", None) else cfg.label, title="Model Set")
         try:
             self.query_one("#prompt", Input).focus()
         except Exception:
@@ -2046,6 +2067,11 @@ class WorkspaceScreen(Screen):
             self.notify("Settings reset to defaults. Click Save settings to apply.", title="Defaults")
         except Exception:
             pass
+
+    @on(Button.Pressed, "#ws-btn-change-passphrase")
+    def _change_vault_passphrase_pressed(self) -> None:
+        from ui.modals.vault import VaultChangePassphraseModal
+        self.app.push_screen(VaultChangePassphraseModal())
 
     @on(Button.Pressed, "#ws-s-back")
     def _back_to_agent(self) -> None:
@@ -2330,14 +2356,19 @@ class WorkspaceScreen(Screen):
             base_model = m.group(1)
             if effort in ("off", "none", "low"):
                 target_suffix = "low"
+                target_label = "Low"
             elif effort in ("high", "max", "xhigh"):
                 target_suffix = "high"
+                target_label = "High"
             else:
                 target_suffix = "medium"
+                target_label = "Medium"
 
             new_model = f"{base_model}-{target_suffix}"
             if new_model.lower() != cur_model.lower():
                 prov.model = new_model
+                if getattr(prov, "name", None) and re.search(r'\((Low|Medium|High|Max)\)', prov.name, flags=re.I):
+                    prov.name = re.sub(r'\((Low|Medium|High|Max)\)', f'({target_label})', prov.name, flags=re.I)
                 if hasattr(self.app.backend, "save_provider_config"):
                     try:
                         self.run_worker(self.app.backend.save_provider_config(prov), group="save-prov")

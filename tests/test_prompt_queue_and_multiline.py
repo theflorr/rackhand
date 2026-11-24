@@ -338,8 +338,12 @@ def test_queue_ui_shows_messages_above_prompt_and_alt_m_hint(dummy_app):
     screen._update_queue_ui()
     assert mock_queue_bar.display is True
     assert "-visible" in mock_queue_bar.classes
-    assert "show ip int br" in str(mock_queue_content._render())
-    assert "show version" in str(mock_queue_content._render())
+    rendered_content = str(mock_queue_content._render())
+    assert "show ip int br" in rendered_content
+    assert "show version" in rendered_content
+    assert "\n" in rendered_content  # Under each other vertically
+    assert "⏳" not in rendered_content  # Emoji removed
+    assert "◈" in rendered_content  # Custom symbol present
     assert "Press" in str(mock_queue_hint._render()) and "ALT+M" in str(mock_queue_hint._render())
 
     # Clear queue

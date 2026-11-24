@@ -187,3 +187,56 @@ def test_sync_provider_model_variant():
     finally:
         active_app.reset(token)
 
+
+@pytest.mark.asyncio
+async def test_antigravity_honors_effort_first_and_auto_changes_model():
+    from llm_engine import RealLLMEngine
+    from unittest.mock import AsyncMock, patch
+
+    engine = RealLLMEngine()
+    prov = ProviderConfig(
+        key="agy",
+        name="Antigravity",
+        model="gemini-3.8-flash-low",  # Suffix is -low
+        api_key="token-1",
+    )
+    # Effort is configured to "medium"
+    settings = Settings(reasoning_effort="medium")
+    agent_spec = MagicMock(badge="[AGY]", name="Network Agent")
+
+    captured_cmds = []
+
+    async def mock_subprocess_exec(*cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (b'{"response": "All good", "conversation_id": "c123"}', b"")
+        return mock_proc
+
+    with patch("llm_engine.ensure_agy_in_path", return_value="/usr/local/bin/agy"):
+        with patch("asyncio.create_subprocess_exec", side_effect=mock_subprocess_exec):
+            events = []
+            async for ev in engine._run_antigravity_turn(
+                prompt="test prompt",
+                session=None,
+                provider=prov,
+                settings=settings,
+                agent_spec=agent_spec,
+                run_command_fn=AsyncMock(),
+                propose_change_fn=AsyncMock(),
+                session_id="s1",
+            ):
+                events.append(ev)
+
+    # 1. Check that the command invoked by AGY CLI had model auto-changed to gemini-3.8-flash-medium
+    assert len(captured_cmds) >= 1
+    cmd = captured_cmds[0]
+    effort_idx = cmd.index("--effort")
+    assert cmd[effort_idx + 1] == "medium"
+    model_idx = cmd.index("--model")
+    assert cmd[model_idx + 1] == "gemini-3.8-flash-medium"
+
+    # 2. Check that provider model was automatically updated to honor effort
+    assert prov.model == "gemini-3.8-flash-medium"
+
+

@@ -14,6 +14,8 @@ dependencies = [
     "paramiko>=3.0.0",
     "pyserial>=3.5",
     "httpx>=0.25.0",
+    "pynacl>=1.5.0",
+    "zxcvbn>=4.4.28",
 ]
 
 [project.scripts]
@@ -31,6 +33,7 @@ py-modules = [
     "subscription_detector",
     "updater",
     "usage_tracker",
+    "vault",
 ]
 
 [tool.setuptools.packages.find]

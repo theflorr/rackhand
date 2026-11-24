@@ -666,6 +666,19 @@ class UsageTracker:
         )
 
     def _load_from_disk(self) -> None:
+        try:
+            from vault import get_vault
+            v = get_vault()
+            if v.is_unlocked():
+                entries_data, rl_data, q_data = v.load_usage()
+                if entries_data:
+                    self.entries = [TokenUsageEntry.from_dict(d) for d in entries_data if isinstance(d, dict)]
+                    self.rate_limits = {k: RateLimitInfo.from_dict(val) for k, val in rl_data.items()}
+                    self.api_quotas = {k: ApiQuotaInfo.from_dict(val) for k, val in q_data.items()}
+                    return
+        except Exception:
+            pass
+
         if not self.storage_path.is_file():
             return
         try:
@@ -677,6 +690,19 @@ class UsageTracker:
             logger.debug("Failed to load usage history: %s", exc)
 
     def _save_to_disk(self) -> None:
+        try:
+            from vault import get_vault
+            v = get_vault()
+            if v.is_unlocked():
+                v.save_usage(
+                    [e.to_dict() for e in self.entries[-2000:]],
+                    {k: v.to_dict() for k, v in self.rate_limits.items()},
+                    {k: v.to_dict() for k, v in self.api_quotas.items()},
+                )
+                return
+        except Exception:
+            pass
+
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.storage_path, "w", encoding="utf-8") as f:

@@ -565,6 +565,9 @@ class RealBackend(Backend):
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         ensure_agy_in_path()
 
+        from vault import get_vault
+        self.vault = get_vault()
+
         self._active_sessions: dict[str, DeviceSession] = {}
         self._serial_drivers: dict[str, RealSerialSession] = {}
         self._ssh_drivers: dict[str, RealSSHSession] = {}
@@ -575,13 +578,22 @@ class RealBackend(Backend):
         self.usage_tracker = UsageTracker.get_instance()
 
         self._providers: dict[str, ProviderConfig] = {}
-        if self._providers_file.exists():
+        if self.vault.is_unlocked():
+            self.reload_from_vault()
+        elif self._providers_file.exists():
             try:
                 pdata = json.loads(self._providers_file.read_text(encoding="utf-8"))
                 for pk, pv in pdata.items():
                     self._providers[pk] = ProviderConfig.from_dict(pv)
             except Exception:
                 pass
+
+    def reload_from_vault(self) -> None:
+        """Reload providers and settings into memory from decrypted vault."""
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            pdata = self.vault.get_providers()
+            for pk, pv in pdata.items():
+                self._providers[pk] = ProviderConfig.from_dict(pv)
 
     # ---- device discovery & profiles ----------------------------------------
 
@@ -695,8 +707,14 @@ class RealBackend(Backend):
             return await asyncio.to_thread(_probe_ssh_sync)
 
     async def load_profiles(self) -> list[DeviceProfile]:
-        # 1. Read existing saved profiles if present
-        if self._profiles_file.is_file():
+        # 1. Read existing saved profiles from vault or disk
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            vdata = self.vault.get_profiles()
+            if vdata:
+                profiles = [DeviceProfile.from_dict(d) for d in vdata if isinstance(d, dict)]
+                if profiles:
+                    return profiles
+        elif self._profiles_file.is_file():
             try:
                 data = json.loads(self._profiles_file.read_text(encoding="utf-8"))
                 if isinstance(data, list) and data:
@@ -730,6 +748,15 @@ class RealBackend(Backend):
 
     async def save_profile(self, profile: DeviceProfile) -> None:
         updated = []
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            vdata = self.vault.get_profiles()
+            if vdata:
+                updated = [DeviceProfile.from_dict(d) for d in vdata if isinstance(d, dict)]
+            updated = [p for p in updated if p.name != profile.name and p.address != profile.address]
+            updated.append(profile)
+            self.vault.set_profiles([p.to_dict() for p in updated])
+            return
+
         if self._profiles_file.is_file():
             try:
                 data = json.loads(self._profiles_file.read_text(encoding="utf-8"))
@@ -929,11 +956,19 @@ class RealBackend(Backend):
     def _save_providers_to_disk(self) -> None:
         try:
             pdata = {k: v.to_dict() for k, v in self._providers.items()}
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                for k, v in pdata.items():
+                    self.vault.set_provider(k, v)
+                return
             self._providers_file.write_text(json.dumps(pdata, indent=2), encoding="utf-8")
         except Exception:
             pass
 
     async def load_provider_configs(self) -> dict[str, ProviderConfig]:
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            vdata = self.vault.get_providers()
+            for pk, pv in vdata.items():
+                self._providers[pk] = ProviderConfig.from_dict(pv)
         return dict(self._providers)
 
     async def save_provider_config(self, cfg: ProviderConfig) -> None:
@@ -942,6 +977,12 @@ class RealBackend(Backend):
 
     async def delete_provider_config(self, key: str) -> None:
         self._providers.pop(key, None)
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            try:
+                self.vault.delete_provider(key)
+                return
+            except Exception:
+                pass
         self._save_providers_to_disk()
 
     async def test_provider(self, cfg: ProviderConfig) -> TestResult:
@@ -1184,6 +1225,18 @@ class RealBackend(Backend):
         def _load_index_sync() -> tuple[list[ChatSession], Optional[str]]:
             sessions: list[ChatSession] = []
             active_id: Optional[str] = None
+
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                raw_sessions = self.vault.get_sessions_index()
+                for d in raw_sessions:
+                    if isinstance(d, dict) and "id" in d:
+                        sessions.append(ChatSession.from_dict(d))
+                        ui_m, mem = self.vault.get_session_details(d["id"])
+                        if mem:
+                            self._llm_engine.memory.set_messages(d["id"], mem)
+                active_id = sessions[0].id if sessions else None
+                return sessions, active_id
+
             if self._sessions_index_file.is_file():
                 try:
                     data = json.loads(self._sessions_index_file.read_text(encoding="utf-8"))
@@ -1228,6 +1281,16 @@ class RealBackend(Backend):
     async def load_chat_session_details(self, session_id: str) -> tuple[list[ChatMessage], list[dict[str, Any]]]:
         def _load_details_sync() -> tuple[list[ChatMessage], list[dict[str, Any]]]:
             from ui.messages import deserialize_message
+
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                raw_ui, mem_msgs = self.vault.get_session_details(session_id)
+                ui_msgs = []
+                for m in raw_ui:
+                    obj = deserialize_message(m)
+                    if obj:
+                        ui_msgs.append(obj)
+                return ui_msgs, (mem_msgs if isinstance(mem_msgs, list) else [])
+
             s_file = self._sessions_dir / f"{session_id}.json"
             if not s_file.is_file():
                 return [], []
@@ -1255,12 +1318,16 @@ class RealBackend(Backend):
         is_active: bool = False,
     ) -> None:
         def _save_sync() -> None:
+            mem = memory_messages if memory_messages is not None else self._llm_engine.memory.get_messages(session.id)
+            serialized_msgs = [m.to_dict() for m in ui_messages if hasattr(m, "to_dict")]
+
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                self.vault.set_session_details(session.id, session.to_dict(), serialized_msgs, mem)
+                return
+
             self._sessions_dir.mkdir(parents=True, exist_ok=True)
             s_file = self._sessions_dir / f"{session.id}.json"
             tmp_file = self._sessions_dir / f"{session.id}.tmp"
-
-            mem = memory_messages if memory_messages is not None else self._llm_engine.memory.get_messages(session.id)
-            serialized_msgs = [m.to_dict() for m in ui_messages if hasattr(m, "to_dict")]
 
             payload = {
                 "session": session.to_dict(),
@@ -1285,6 +1352,10 @@ class RealBackend(Backend):
 
     async def delete_chat_session_persisted(self, session_id: str) -> None:
         def _delete_sync() -> None:
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                self.vault.delete_session(session_id)
+                return
+
             s_file = self._sessions_dir / f"{session_id}.json"
             if s_file.exists():
                 try:
@@ -1302,6 +1373,10 @@ class RealBackend(Backend):
 
     async def save_session_index(self, sessions: list[ChatSession], active_session_id: Optional[str]) -> None:
         def _save_index_sync() -> None:
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                self.vault.set_sessions_index([s.to_dict() for s in sessions])
+                return
+
             payload = {
                 "active_session_id": active_session_id,
                 "sessions": [s.to_dict() for s in sessions],
@@ -1326,10 +1401,14 @@ class RealBackend(Backend):
         if settings is not None and not settings.keep_transcripts:
             return
         def _append_sync() -> None:
+            safe_title = re.sub(r'[\\/*?:"<>|]', "_", session.title or f"session_{session.num}").strip()
+            if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+                self.vault.append_transcript(session.id, safe_title, entry)
+                return
+
             raw_dir = getattr(settings, "transcript_dir", "~/.rackhand/transcripts") if settings else "~/.rackhand/transcripts"
             tdir = Path(os.path.expanduser(raw_dir))
             tdir.mkdir(parents=True, exist_ok=True)
-            safe_title = re.sub(r'[\\/*?:"<>|]', "_", session.title or f"session_{session.num}").strip()
             tfile = tdir / f"{safe_title}_{session.id}.md"
             with tfile.open("a", encoding="utf-8") as f:
                 f.write(entry + "\n\n")
@@ -1342,6 +1421,11 @@ class RealBackend(Backend):
     # ---- settings ---------------------------------------------------------------
 
     async def load_settings(self) -> Settings:
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            vdata = self.vault.get_settings()
+            if isinstance(vdata, dict):
+                return Settings.from_dict(vdata)
+
         if self._settings_file.is_file():
             try:
                 data = json.loads(self._settings_file.read_text(encoding="utf-8"))
@@ -1352,6 +1436,10 @@ class RealBackend(Backend):
         return Settings()
 
     async def save_settings(self, settings: Settings) -> None:
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            self.vault.set_settings(settings.to_dict())
+            return
+
         try:
             self._settings_file.write_text(
                 json.dumps(settings.to_dict(), indent=2),

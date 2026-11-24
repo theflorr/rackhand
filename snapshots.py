@@ -126,17 +126,30 @@ async def capture_pre_change_snapshot(
 
     # Save Configuration
     if snapshot.config_captured and config_text:
-        # Determine local storage path
-        base_dir = Path(os.path.expanduser(getattr(settings, "snapshot_dir", "~/.rackhand/snapshots")))
-        dev_dir = base_dir / hostname
-        dev_dir.mkdir(parents=True, exist_ok=True)
-        local_cfg_file = dev_dir / f"{sid}_{ts_str}.cfg"
-
+        vault = None
         try:
-            local_cfg_file.write_text(config_text, encoding="utf-8")
-            snapshot.local_path = str(local_cfg_file)
+            from vault import get_vault
+            v = get_vault()
+            if v.is_unlocked():
+                vault = v
         except Exception:
             pass
+
+        if vault:
+            vault.save_snapshot(sid, hostname, ts_str, config_text, snapshot.to_dict())
+            snapshot.local_path = f"vault://snapshots/{hostname}/{sid}_{ts_str}.cfg"
+        else:
+            # Determine local storage path
+            base_dir = Path(os.path.expanduser(getattr(settings, "snapshot_dir", "~/.rackhand/snapshots")))
+            dev_dir = base_dir / hostname
+            dev_dir.mkdir(parents=True, exist_ok=True)
+            local_cfg_file = dev_dir / f"{sid}_{ts_str}.cfg"
+
+            try:
+                local_cfg_file.write_text(config_text, encoding="utf-8")
+                snapshot.local_path = str(local_cfg_file)
+            except Exception:
+                pass
 
         # If on-device destination requested, issue copy to flash
         if dest == "device":

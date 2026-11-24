@@ -959,12 +959,12 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 #composer-queue-bar {
     width: 100%;
-    height: 1;
+    height: auto;
+    max-height: 5;
     background: #0f172a;
     border-left: outer #f59e0b;
     padding: 0 1;
     margin-bottom: 1;
-    align-vertical: middle;
     display: none;
 }
 #composer-queue-bar.-visible {
@@ -972,7 +972,8 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
 }
 #composer-queue-content {
     width: 1fr;
-    height: 1;
+    height: auto;
+    max-height: 5;
     color: #e2e8f0;
 }
 #composer-queue-hint {

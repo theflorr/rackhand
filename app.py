@@ -54,6 +54,32 @@ class RackhandApp(App):
 
     async def on_mount(self) -> None:
         ensure_agy_in_path()
+
+        from vault import get_vault
+        from ui.modals.vault import VaultSetupModal, VaultUnlockModal
+
+        vault = get_vault()
+        if not vault.is_unlocked():
+            if not vault.is_vault_initialized() or vault.has_unencrypted_data():
+                is_mig = vault.has_unencrypted_data()
+                await self.push_screen(VaultSetupModal(migration_mode=is_mig), self._on_vault_unlocked)
+                return
+            else:
+                await self.push_screen(VaultUnlockModal(), self._on_vault_unlocked)
+                return
+
+        await self._complete_startup()
+
+    async def _on_vault_unlocked(self, success: bool) -> None:
+        if not success:
+            self.exit()
+            return
+        await self._complete_startup()
+
+    async def _complete_startup(self) -> None:
+        if hasattr(self.backend, "reload_from_vault"):
+            self.backend.reload_from_vault()
+
         self.settings = await self.backend.load_settings()
         
         # Auto-detect and load local subscriptions (Claude, Antigravity, OpenCode, Copilot, etc.)

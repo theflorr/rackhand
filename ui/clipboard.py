@@ -182,4 +182,16 @@ def save_clipboard_image(
     dest_path = dest_dir / filename
 
     image.save(dest_path, format="PNG")
+
+    try:
+        from vault import get_vault
+        v = get_vault()
+        if v.is_unlocked():
+            import io
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            v.save_image(filename, buf.getvalue())
+    except Exception:
+        pass
+
     return dest_path
