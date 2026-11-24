@@ -200,6 +200,7 @@ def get_suggestions(raw_text: str, app: Any = None, cursor_pos: Optional[int] = 
 
         # Top-level slash commands
         all_cmds = [
+            CommandSuggestion("/new", "/new", "Start a new chat session (same as + new session)", completion="/new"),
             CommandSuggestion("/init", "/init", "Identify connected devices, verify access, and audit basic config overview", completion="/init"),
             CommandSuggestion("/plan", "/plan", "Enter plan mode (device discovery, read-only inspection, task planning)", completion="/plan"),
             CommandSuggestion("/build", "/build", "Exit plan mode to normal execution (apply changes & run tasks)", completion="/build"),

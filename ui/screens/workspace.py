@@ -1681,9 +1681,15 @@ class WorkspaceScreen(Screen):
             self.action_settings()
             return
 
+        if cmd in ("new", "newsession", "new-session"):
+            self.action_new_session()
+            return
+
         if cmd in ("help", "?"):
             help_text = Text()
             help_text.append("RACKHAND CLI COMMANDS\n\n", style="bold white")
+            help_text.append("/new", style="bold white")
+            help_text.append("                Start a new chat session (same as + new session)\n", style="dim")
             help_text.append("/init", style="bold white")
             help_text.append("               Identify connected devices, verify access & audit baseline\n", style="dim")
             help_text.append("/plan", style="bold white")
@@ -2256,6 +2262,10 @@ class WorkspaceScreen(Screen):
         self._render_console()
         self.update_bars()
         self._bubble(Text.assemble(("disconnected  ", "dim"), (s.hostname or s.profile.name, "dim")))
+
+    def action_new_session(self) -> None:
+        """Create a new chat session and switch to it immediately (same as + new session)."""
+        self._on_new_session()
 
     @on(Button.Pressed, "#btn-new-session")
     def _on_new_session(self) -> None:

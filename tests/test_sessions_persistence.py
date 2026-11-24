@@ -338,3 +338,53 @@ async def test_workspace_restore_saved_sessions_flow():
         assert len(screen.chat_messages["ws-1"]) == 1
     finally:
         active_app.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_slash_new_command_creates_new_session():
+    from textual.app import App
+    from textual._context import active_app
+    from ui.screens.workspace import WorkspaceScreen
+    from ui.suggestions import get_suggestions
+
+    # 1. Verify autocomplete suggestions include /new
+    suggs = get_suggestions("/new")
+    assert any(s.value == "/new" for s in suggs)
+    new_sugg = next(s for s in suggs if s.value == "/new")
+    assert new_sugg.completion == "/new"
+
+    # 2. Verify /new command creates and switches session in workspace
+    class DummyApp(App):
+        def __init__(self):
+            super().__init__()
+            self.sessions = []
+            self.active = None
+            self.active_id = None
+            self.backend = MagicMock()
+            self.settings = Settings()
+
+    app = DummyApp()
+    token = active_app.set(app)
+    try:
+        screen = WorkspaceScreen()
+        screen._app = app
+        mock_input = MagicMock()
+        screen.query_one = MagicMock(return_value=mock_input)
+        screen.refresh_session_list = MagicMock()
+        screen.update_bars = MagicMock()
+
+        sess1 = screen.create_chat_session()
+        screen.active_session_id = sess1.id
+        initial_count = len(screen.chat_sessions)
+
+        # Execute /new
+        screen._handle_command("/new")
+
+        assert len(screen.chat_sessions) == initial_count + 1
+        new_sess = screen.chat_sessions[-1]
+        assert new_sess.id != sess1.id
+        assert screen.active_session_id == new_sess.id
+        mock_input.focus.assert_called()
+    finally:
+        active_app.reset(token)
+
