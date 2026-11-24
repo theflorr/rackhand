@@ -2,7 +2,7 @@
 
 **Agentic network engineering - autonomously**
 
-Rackhand connects LLM agents directly to the device, so you don't have to relay output and commands by hand. Rackhand puts autonomous LLM agents directly on your serial console and SSH sessions. It edits switch and router configs, troubleshoots VLANs and routing protocols, and plans out the exact commands with human approval before touching your hardware.
+Rackhand connects LLM agents directly to the device, so you don't have to relay output and commands by hand. We put autonomous LLM agents directly on your serial console and SSH sessions. It can edit switch and router configs, troubleshoots VLANs and routing protocols, and plan out the exact commands with human approval before touching your hardware.
 
 ![Rackhand](screenshot.png)
 
@@ -21,7 +21,7 @@ All versions before v1.2 is EOF and is not recommended for use.
 * **Direct Serial & SSH**: Plugs straight into USB-to-serial console cables (with automatic COM port and baud detection) or network SSH sessions.
 * **Human-in-the-Loop Safety**: The agent audits and investigates read-only first. If it suggests changes, it presents an approval card with the exact commands and reasoning. You review, edit, or reject before anything gets sent to the CLI.
 * **Network Baseline Knowledge**: Pre-loaded with operational playbooks for Cisco (IOS, IOS-XE, IOS-XR, NX-OS, ASA) and Fortinet (FortiOS, FortiSwitch, FortiAP).
-* **Multi-Provider AI**: Supports Anthropic Claude, OpenAI, Google Antigravity / Gemini, DeepSeek, OpenRouter, or local Ollama instances.
+* **Multi-Provider AI**: Supports Anthropic Claude, OpenAI, Google Antigravity, DeepSeek, OpenRouter, or local Ollama instances.
 * **Clean Dark TUI**: Built on Textual with split live console streaming, agent chat, and side-by-side session management.
 
 ![Rackhand](screenshot-agent.png)
