@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rackhand"
-version = "1.3.1"
+version = "1.3.2"
 description = "Agentic network configuration for the terminal"
 readme = "README.md"
 requires-python = ">=3.10"
