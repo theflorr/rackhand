@@ -199,11 +199,20 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
     build_content = build_rs.read_text(encoding="utf-8")
     if 'set_icon("rackhand.ico")' not in build_content:
         icon_hook = """
-    #[cfg(target_os = "windows")]
-    {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winres::WindowsResource::new();
         res.set_icon("rackhand.ico");
-        let _ = res.compile();
+        res.set_windres_path("x86_64-w64-mingw32-windres");
+        res.set_ar_path("x86_64-w64-mingw32-ar");
+        if let Err(e) = res.compile() {
+            eprintln!("Failed to compile Windows resource: {:?}", e);
+        }
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+            if let Ok(out_dir) = std::env::var("OUT_DIR") {
+                let res_o = std::path::Path::new(&out_dir).join("resource.o");
+                println!("cargo:rustc-link-arg={}", res_o.display());
+            }
+        }
     }
 """
         # Insert before the closing brace of main()
