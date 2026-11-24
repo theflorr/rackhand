@@ -7,7 +7,7 @@ from typing import Optional
 
 import zxcvbn
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
@@ -42,7 +42,7 @@ class VaultSetupModal(ModalScreen[bool]):
         background: rgba(0, 0, 0, 0.85);
     }
     #vault-setup-dialog {
-        width: 66;
+        width: 68;
         height: auto;
         border: round #27272a;
         background: #111115;
@@ -83,13 +83,25 @@ class VaultSetupModal(ModalScreen[bool]):
         color: #94a3b8;
     }
     #setup-checkbox-container {
+        height: auto;
+        width: 100%;
         margin-top: 1;
         margin-bottom: 1;
     }
     #setup-checkbox {
-        color: #d4d4d8;
-        background: transparent;
+        width: 3;
+        min-width: 3;
+        height: auto;
+        padding: 0;
+        margin: 0;
         border: none;
+        background: transparent;
+    }
+    #setup-checkbox-label {
+        width: 1fr;
+        height: auto;
+        color: #d4d4d8;
+        padding-left: 1;
     }
     #setup-status {
         color: #38bdf8;
@@ -139,11 +151,11 @@ class VaultSetupModal(ModalScreen[bool]):
                 yield Static(self._render_strength_bar(0, 0), id="setup-strength-bar")
                 yield Static("Minimum 12 characters and score ≥ 3 required.", id="setup-strength-hint")
 
-            with Vertical(id="setup-checkbox-container"):
-                yield Checkbox(
-                    "I understand that a lost passphrase means permanent data loss and that Rackhand cannot recover it.",
-                    id="setup-checkbox",
-                    value=False,
+            with Horizontal(id="setup-checkbox-container"):
+                yield Checkbox("", id="setup-checkbox", value=False)
+                yield Label(
+                    "I understand that a lost passphrase means permanent data loss and cannot be recovered.",
+                    id="setup-checkbox-label",
                 )
 
             yield Static("Creating vault...", id="setup-status")
@@ -153,6 +165,11 @@ class VaultSetupModal(ModalScreen[bool]):
 
     def on_mount(self) -> None:
         self.query_one("#setup-passphrase", Input).focus()
+
+    @on(events.Click, "#setup-checkbox-label")
+    def _on_checkbox_label_click(self) -> None:
+        cb = self.query_one("#setup-checkbox", Checkbox)
+        cb.value = not cb.value
 
     @on(Input.Changed, "#setup-passphrase")
     @on(Input.Changed, "#setup-confirm")
