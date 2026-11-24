@@ -7,16 +7,20 @@ compares against the running version, and handles download and binary replacemen
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
+
+logger = logging.getLogger("rackhand.updater")
 
 GITHUB_REPO = "theflorr/rackhand"
 RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
@@ -192,23 +196,37 @@ async def download_update(
 ) -> bool:
     """Download the new executable from GitHub with progress callback."""
     try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if target_path.exists():
+            try:
+                target_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
         async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
             async with client.stream("GET", download_url, headers={"User-Agent": "Rackhand-Updater"}) as resp:
                 if resp.status_code != 200:
+                    logger.warning("Download HTTP status %d for %s", resp.status_code, download_url)
                     return False
                 total = int(resp.headers.get("content-length", 0))
                 downloaded = 0
-                target_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(target_path, "wb") as f:
                     async for chunk in resp.aiter_bytes(chunk_size=65536):
                         f.write(chunk)
                         downloaded += len(chunk)
                         if progress_cb and total > 0:
-                            progress_cb(downloaded / total, downloaded, total)
+                            try:
+                                progress_cb(downloaded / total, downloaded, total)
+                            except Exception:
+                                pass
         return True
-    except Exception:
+    except Exception as exc:
+        logger.warning("Download failed for %s -> %s: %s", download_url, target_path, exc, exc_info=True)
         if target_path.exists():
-            target_path.unlink(missing_ok=True)
+            try:
+                target_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         return False
 
 

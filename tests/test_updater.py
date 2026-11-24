@@ -306,3 +306,54 @@ async def test_update_modal_open_releases_action():
             assert len(opened_urls) == 1
             assert opened_urls[0] == "https://github.com/theflorr/rackhand/releases/tag/v1.2.0"
 
+
+@pytest.mark.asyncio
+async def test_update_modal_perform_download_progress(tmp_path):
+    from textual.app import App
+    from textual.widgets import Button, ProgressBar, Static
+    from ui.modals.update import UpdateModal
+
+    rel = ReleaseInfo(
+        version="v1.3.0",
+        title="v1.3.0 Release",
+        tag="v1.3.0",
+        html_url="https://github.com/theflorr/rackhand/releases/tag/v1.3.0",
+        asset_name="rackhand.exe",
+        asset_download_url="https://example.com/rackhand.exe",
+        asset_size=25000000,
+        published_at="2026-11-24",
+        body="Feature update",
+    )
+
+    class TestModalApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(UpdateModal(current_version="v1.2.0", release=rel, is_source=False))
+
+    async def mock_download(url, target, on_prog):
+        # Simulate progress calls on the async event loop
+        on_prog(0.5, 12500000, 25000000)
+        on_prog(1.0, 25000000, 25000000)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+        return True
+
+    app = TestModalApp()
+    with patch("ui.modals.update.download_update", side_effect=mock_download):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, UpdateModal)
+            btn_up = modal.query_one("#btn-update", Button)
+            btn_up.press()
+            await pilot.pause()
+            await pilot.pause()
+
+            # Verify that download succeeded without crashing
+            prog = modal.query_one("#update-progress", ProgressBar)
+            assert prog.progress == 100
+            status = modal.query_one("#update-status", Static)
+            assert "Download complete" in str(status.render())
+            assert str(btn_up.label) == "Restart Now"
+            assert btn_up.disabled is False
+
+

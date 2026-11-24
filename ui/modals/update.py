@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -162,17 +164,29 @@ class UpdateModal(ModalScreen[bool]):
 
         status_lbl.update("Downloading latest release...")
         
-        target_dir = Path(os.environ.get("TEMP", ".")) / "rackhand_update"
+        target_dir = Path(tempfile.gettempdir()) / "rackhand_update"
         target_file = target_dir / "rackhand_new.exe"
 
         def on_prog(ratio: float, downloaded: int, total: int) -> None:
             pct = int(ratio * 100)
-            self.app.call_from_thread(lambda: prog_bar.update(progress=pct))
             dl_mb = downloaded / (1024 * 1024)
             tot_mb = total / (1024 * 1024)
-            self.app.call_from_thread(
-                lambda: status_lbl.update(f"Downloading... {pct}% ({dl_mb:.1f} MB / {tot_mb:.1f} MB)")
-            )
+
+            def _apply_ui_update() -> None:
+                try:
+                    prog_bar.update(progress=pct)
+                    status_lbl.update(f"Downloading... {pct}% ({dl_mb:.1f} MB / {tot_mb:.1f} MB)")
+                except Exception:
+                    pass
+
+            # Safe check: call directly on main thread, or call_from_thread if off-thread
+            if threading.current_thread() == threading.main_thread():
+                _apply_ui_update()
+            else:
+                try:
+                    self.app.call_from_thread(_apply_ui_update)
+                except Exception:
+                    _apply_ui_update()
 
         success = await download_update(self.release.asset_download_url, target_file, on_prog)
 
