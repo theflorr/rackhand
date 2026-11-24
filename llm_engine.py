@@ -140,6 +140,11 @@ class ContextMemoryManager:
         """Clear conversation memory for a session."""
         self.sessions.pop(session_id, None)
 
+    def set_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        """Set messages directly for a session (used when restoring sessions from disk)."""
+        import copy
+        self.sessions[session_id] = copy.deepcopy(messages)
+
     def clone_session(self, source_session_id: str, target_session_id: str) -> None:
         """Clone all messages from source session to target session."""
         import copy
@@ -921,6 +926,10 @@ class RealLLMEngine:
         """Clear session memory and active AGY conversation state."""
         self.memory.clear(session_id)
         self._agy_conversations.pop(session_id, None)
+
+    def set_session_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        """Set context memory messages for a session."""
+        self.memory.set_messages(session_id, messages)
 
     def clone_session(self, source_session_id: str, target_session_id: str) -> None:
         """Clone context memory for a session into a new session."""

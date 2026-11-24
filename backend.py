@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
 import os
@@ -12,7 +13,10 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ui.messages import ChatMessage
 
 try:
     import serial
@@ -40,6 +44,7 @@ from models import (
     ApiScheme,
     ApprovalDecision,
     AuthStyle,
+    ChatSession,
     CommandResult,
     ConnState,
     ConsoleChunk,
@@ -178,6 +183,42 @@ class Backend(ABC):
     @abstractmethod
     def get_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         """Get raw messages stored in context memory for the session."""
+
+    @abstractmethod
+    def set_session_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        """Set context memory messages for a session."""
+
+    @abstractmethod
+    async def load_chat_sessions(self) -> tuple[list[ChatSession], Optional[str]]:
+        """Load saved chat sessions and the last active session ID.
+        Returns (sessions_list, active_session_id)."""
+
+    @abstractmethod
+    async def load_chat_session_details(self, session_id: str) -> tuple[list[ChatMessage], list[dict[str, Any]]]:
+        """Load UI chat messages and engine memory messages for a session.
+        Returns (ui_messages, memory_messages)."""
+
+    @abstractmethod
+    async def save_chat_session(
+        self,
+        session: ChatSession,
+        ui_messages: list[ChatMessage],
+        memory_messages: Optional[list[dict[str, Any]]] = None,
+        is_active: bool = False,
+    ) -> None:
+        """Save a chat session's metadata, UI messages, and context memory to disk."""
+
+    @abstractmethod
+    async def delete_chat_session_persisted(self, session_id: str) -> None:
+        """Delete persisted session file and remove from session index."""
+
+    @abstractmethod
+    async def save_session_index(self, sessions: list[ChatSession], active_session_id: Optional[str]) -> None:
+        """Update the saved session index order and active session ID."""
+
+    @abstractmethod
+    async def append_session_transcript(self, session: ChatSession, entry: str, settings: Optional[Settings] = None) -> None:
+        """Append an audit log entry to the session transcript on disk if keep_transcripts is enabled."""
 
     # ---- settings ---------------------------------------------------------------
     @abstractmethod
@@ -514,7 +555,10 @@ class RealBackend(Backend):
         self._profiles_file = self._dir / "profiles.json"
         self._settings_file = self._dir / "settings.json"
         self._providers_file = self._dir / "providers.json"
+        self._sessions_index_file = self._dir / "sessions.json"
+        self._sessions_dir = self._dir / "sessions"
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._sessions_dir.mkdir(parents=True, exist_ok=True)
         ensure_agy_in_path()
 
         self._active_sessions: dict[str, DeviceSession] = {}
@@ -1121,6 +1165,170 @@ class RealBackend(Backend):
 
     def get_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         return self._llm_engine.memory.get_messages(session_id)
+
+    def set_session_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        self._llm_engine.set_session_messages(session_id, messages)
+
+    # ---- chat session persistence -----------------------------------------------
+
+    async def load_chat_sessions(self) -> tuple[list[ChatSession], Optional[str]]:
+        def _load_index_sync() -> tuple[list[ChatSession], Optional[str]]:
+            sessions: list[ChatSession] = []
+            active_id: Optional[str] = None
+            if self._sessions_index_file.is_file():
+                try:
+                    data = json.loads(self._sessions_index_file.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        active_id = data.get("active_session_id")
+                        raw_list = data.get("sessions", [])
+                        if isinstance(raw_list, list):
+                            for item in raw_list:
+                                if isinstance(item, dict):
+                                    sessions.append(ChatSession.from_dict(item))
+                except Exception as exc:
+                    logger.debug("Failed to read sessions index: %s", exc)
+
+            # Fallback recovery: if index missing or empty, discover from sessions dir
+            if not sessions and self._sessions_dir.is_dir():
+                for f in sorted(self._sessions_dir.glob("*.json")):
+                    try:
+                        sdata = json.loads(f.read_text(encoding="utf-8"))
+                        meta = sdata.get("session") or sdata
+                        if isinstance(meta, dict) and "id" in meta:
+                            sessions.append(ChatSession.from_dict(meta))
+                    except Exception:
+                        pass
+                sessions.sort(key=lambda s: s.num)
+
+            # Pre-seed memory in LLM engine for loaded sessions
+            for s in sessions:
+                s_file = self._sessions_dir / f"{s.id}.json"
+                if s_file.is_file():
+                    try:
+                        sdata = json.loads(s_file.read_text(encoding="utf-8"))
+                        mem = sdata.get("memory", [])
+                        if isinstance(mem, list):
+                            self._llm_engine.memory.set_messages(s.id, mem)
+                    except Exception:
+                        pass
+
+            return sessions, active_id
+
+        return await asyncio.to_thread(_load_index_sync)
+
+    async def load_chat_session_details(self, session_id: str) -> tuple[list[ChatMessage], list[dict[str, Any]]]:
+        def _load_details_sync() -> tuple[list[ChatMessage], list[dict[str, Any]]]:
+            from ui.messages import deserialize_message
+            s_file = self._sessions_dir / f"{session_id}.json"
+            if not s_file.is_file():
+                return [], []
+            try:
+                data = json.loads(s_file.read_text(encoding="utf-8"))
+                raw_msgs = data.get("messages", [])
+                ui_msgs: list[ChatMessage] = []
+                for m in raw_msgs:
+                    msg_obj = deserialize_message(m)
+                    if msg_obj:
+                        ui_msgs.append(msg_obj)
+                mem_msgs = data.get("memory", [])
+                return ui_msgs, (mem_msgs if isinstance(mem_msgs, list) else [])
+            except Exception as exc:
+                logger.debug("Failed to load details for session %s: %s", session_id, exc)
+                return [], []
+
+        return await asyncio.to_thread(_load_details_sync)
+
+    async def save_chat_session(
+        self,
+        session: ChatSession,
+        ui_messages: list[ChatMessage],
+        memory_messages: Optional[list[dict[str, Any]]] = None,
+        is_active: bool = False,
+    ) -> None:
+        def _save_sync() -> None:
+            self._sessions_dir.mkdir(parents=True, exist_ok=True)
+            s_file = self._sessions_dir / f"{session.id}.json"
+            tmp_file = self._sessions_dir / f"{session.id}.tmp"
+
+            mem = memory_messages if memory_messages is not None else self._llm_engine.memory.get_messages(session.id)
+            serialized_msgs = [m.to_dict() for m in ui_messages if hasattr(m, "to_dict")]
+
+            payload = {
+                "session": session.to_dict(),
+                "messages": serialized_msgs,
+                "memory": mem,
+                "updated_at": datetime.now().isoformat(),
+            }
+            content = json.dumps(payload, indent=2, ensure_ascii=False)
+            try:
+                tmp_file.write_text(content, encoding="utf-8")
+                os.replace(tmp_file, s_file)
+            except Exception:
+                # Direct write fallback for Windows file locks
+                s_file.write_text(content, encoding="utf-8")
+                try:
+                    if tmp_file.exists():
+                        tmp_file.unlink()
+                except Exception:
+                    pass
+
+        await asyncio.to_thread(_save_sync)
+
+    async def delete_chat_session_persisted(self, session_id: str) -> None:
+        def _delete_sync() -> None:
+            s_file = self._sessions_dir / f"{session_id}.json"
+            if s_file.exists():
+                try:
+                    s_file.unlink()
+                except Exception:
+                    pass
+            tmp_file = self._sessions_dir / f"{session_id}.tmp"
+            if tmp_file.exists():
+                try:
+                    tmp_file.unlink()
+                except Exception:
+                    pass
+
+        await asyncio.to_thread(_delete_sync)
+
+    async def save_session_index(self, sessions: list[ChatSession], active_session_id: Optional[str]) -> None:
+        def _save_index_sync() -> None:
+            payload = {
+                "active_session_id": active_session_id,
+                "sessions": [s.to_dict() for s in sessions],
+                "updated_at": datetime.now().isoformat(),
+            }
+            content = json.dumps(payload, indent=2, ensure_ascii=False)
+            tmp = self._dir / "sessions.tmp"
+            try:
+                tmp.write_text(content, encoding="utf-8")
+                os.replace(tmp, self._sessions_index_file)
+            except Exception:
+                self._sessions_index_file.write_text(content, encoding="utf-8")
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except Exception:
+                    pass
+
+        await asyncio.to_thread(_save_index_sync)
+
+    async def append_session_transcript(self, session: ChatSession, entry: str, settings: Optional[Settings] = None) -> None:
+        if settings is not None and not settings.keep_transcripts:
+            return
+        def _append_sync() -> None:
+            raw_dir = getattr(settings, "transcript_dir", "~/.rackhand/transcripts") if settings else "~/.rackhand/transcripts"
+            tdir = Path(os.path.expanduser(raw_dir))
+            tdir.mkdir(parents=True, exist_ok=True)
+            safe_title = re.sub(r'[\\/*?:"<>|]', "_", session.title or f"session_{session.num}").strip()
+            tfile = tdir / f"{safe_title}_{session.id}.md"
+            with tfile.open("a", encoding="utf-8") as f:
+                f.write(entry + "\n\n")
+
+        try:
+            await asyncio.to_thread(_append_sync)
+        except Exception as exc:
+            logger.debug("Failed to append session transcript: %s", exc)
 
     # ---- settings ---------------------------------------------------------------
 

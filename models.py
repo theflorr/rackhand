@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 # =============================================================================
 # 1. HARDWARE & DEVICE ENUMS / MODELS
@@ -308,6 +308,31 @@ class ChatSession:
         if self.title:
             return self.title
         return f"Session #{self.num}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "num": self.num,
+            "title": self.title,
+            "has_prompt": self.has_prompt,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "mode": self.mode,
+            "agent_id": self.agent_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ChatSession:
+        return cls(
+            id=str(data.get("id", "")),
+            num=int(data.get("num", 1)),
+            title=data.get("title"),
+            has_prompt=bool(data.get("has_prompt", False)),
+            tokens_in=int(data.get("tokens_in", 0)),
+            tokens_out=int(data.get("tokens_out", 0)),
+            mode=str(data.get("mode", "build")),
+            agent_id=data.get("agent_id"),
+        )
 
 
 @dataclass

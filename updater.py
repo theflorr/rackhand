@@ -24,20 +24,25 @@ RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 def parse_version(text: str) -> tuple[int, ...]:
     """Extract semantic version integers from a string.
     
+    Supports both two-part ('v1.1', '1.1') and three-part ('v1.1.3', '1.1.3') formats,
+    as well as versions embedded in strings like 'Release v1.1.3' or 'v1.1 Windows compile'.
+    
     Examples:
         'v1.0 Windows compile' -> (1, 0, 0)
         'v1.1'                 -> (1, 1, 0)
-        'v1.2.3'               -> (1, 2, 3)
+        'v1.1.3'               -> (1, 1, 3)
+        '1.1'                  -> (1, 1, 0)
+        '1.1.3'                -> (1, 1, 3)
     """
     if not text:
         return (0, 0, 0)
-    
-    # Match leading version like v1.0, 1.2.3, v2.1
-    m = re.search(r"\bv?(\d+(?:\.\d+)+)\b", text.strip())
+
+    # Match version pattern like v1.1, v1.1.3, 1.1, 1.1.3
+    m = re.search(r"(?:^|[^0-9a-zA-Z])v?(\d+(?:\.\d+)+)(?:[^0-9a-zA-Z]|$)", text.strip())
     if m:
         parts = [int(p) for p in m.group(1).split(".")]
     else:
-        m_single = re.search(r"\bv?(\d+)\b", text.strip())
+        m_single = re.search(r"(?:^|[^0-9a-zA-Z])v?(\d+)(?:[^0-9a-zA-Z]|$)", text.strip())
         parts = [int(m_single.group(1))] if m_single else [0]
 
     # Normalize to at least 3 parts (major, minor, patch)
@@ -46,8 +51,43 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts[:3])
 
 
+def format_version(version: str | tuple[int, ...] | list[int], include_patch_if_zero: bool = False) -> str:
+    """Format a version into canonical representation.
+    
+    Supports both 2-part format ('v1.1') and 3-part format ('v1.1.3'):
+        format_version((1, 1, 0)) -> 'v1.1'
+        format_version((1, 1, 3)) -> 'v1.1.3'
+        format_version('1.1')     -> 'v1.1'
+        format_version('v1.1.3')  -> 'v1.1.3'
+        format_version('1.1.0', include_patch_if_zero=True) -> 'v1.1.0'
+    """
+    if isinstance(version, str):
+        parsed = parse_version(version)
+    elif isinstance(version, (tuple, list)):
+        parsed = tuple(version)
+    else:
+        parsed = (0, 0, 0)
+
+    while len(parsed) < 3:
+        parsed = parsed + (0,)
+
+    major, minor, patch = parsed[0], parsed[1], parsed[2]
+    if patch != 0 or include_patch_if_zero:
+        return f"v{major}.{minor}.{patch}"
+    return f"v{major}.{minor}"
+
+
 def is_update_available(current_version: str, remote_title: str) -> bool:
-    """Return True if remote_title represents a version higher than current_version."""
+    """Return True if remote_title represents a version higher than current_version.
+    
+    Seamlessly compares both two-part ('v1.1') and three-part ('v1.1.3') formats:
+        is_update_available('v1.1', 'v1.1.3') -> True
+        is_update_available('v1.1.3', 'v1.2') -> True
+        is_update_available('v1.1.3', 'v1.1.4') -> True
+        is_update_available('v1.1.3', 'v1.1') -> False
+        is_update_available('v1.1', 'v1.1')   -> False
+        is_update_available('v1.1.3', 'v1.1.3') -> False
+    """
     curr = parse_version(current_version)
     remote = parse_version(remote_title)
     return remote > curr
@@ -81,11 +121,28 @@ async def fetch_latest_release(timeout: float = 10.0) -> Optional[ReleaseInfo]:
             if not isinstance(releases, list) or not releases:
                 return None
 
-            # Get the first (latest) non-draft release
-            latest = next((r for r in releases if not r.get("draft")), releases[0])
-            title = latest.get("name") or latest.get("tag_name") or ""
-            parsed = parse_version(title)
-            ver_str = f"v{parsed[0]}.{parsed[1]}" if parsed[2] == 0 else f"v{parsed[0]}.{parsed[1]}.{parsed[2]}"
+            # Get all non-draft releases
+            valid_releases = [r for r in releases if not r.get("draft")]
+            if not valid_releases:
+                valid_releases = releases
+
+            # Select release with highest semantic version, or the first published release
+            best_release = None
+            best_ver = (0, 0, 0)
+            for r in valid_releases:
+                v_cand = max(parse_version(r.get("name") or ""), parse_version(r.get("tag_name") or ""))
+                if v_cand > best_ver:
+                    best_ver = v_cand
+                    best_release = r
+
+            latest = best_release or valid_releases[0]
+            name = latest.get("name") or ""
+            tag = latest.get("tag_name") or ""
+            title = name or tag or ""
+
+            # Parse version from either name or tag (whichever has valid semantic version)
+            parsed = parse_version(name) if parse_version(name) > (0, 0, 0) else parse_version(tag)
+            ver_str = format_version(parsed) if parsed > (0, 0, 0) else (name or tag or "v0.0")
 
             # Locate Windows rackhand.exe asset if present
             assets = latest.get("assets", [])
@@ -113,12 +170,17 @@ async def fetch_latest_release(timeout: float = 10.0) -> Optional[ReleaseInfo]:
 
 
 async def check_for_update(current_version: str) -> Optional[ReleaseInfo]:
-    """Check if a release with a higher version is published on GitHub."""
+    """Check if a release with a higher version is published on GitHub.
+    
+    Supports current versions in 'v1.1' or 'v1.1.3' format and compares
+    against remote release versions, tags, and titles.
+    """
     rel = await fetch_latest_release()
     if not rel:
         return None
-    if is_update_available(current_version, rel.title):
-        return rel
+    for cand in (rel.version, rel.tag, rel.title):
+        if cand and is_update_available(current_version, cand):
+            return rel
     return None
 
 

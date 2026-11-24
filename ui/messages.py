@@ -34,6 +34,14 @@ class ChatMessage(ABC):
     def render(self) -> Any:
         ...
 
+    @abstractmethod
+    def to_dict(self) -> dict[str, Any]:
+        ...
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Optional[ChatMessage]:
+        return deserialize_message(data)
+
     @property
     def full_classes(self) -> str:
         return f"bubble {self.css_class}".strip()
@@ -74,6 +82,25 @@ class GenericMessage(ChatMessage):
         msg.created_at = self.created_at
         return msg
 
+    def to_dict(self) -> dict[str, Any]:
+        plain = self.content.plain if hasattr(self.content, "plain") else str(self.content)
+        return {
+            "type": "generic",
+            "content": plain,
+            "css_class": self.css_class,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GenericMessage:
+        msg = cls(data.get("content", ""), css_class=data.get("css_class", ""))
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
+        return msg
+
 
 class UserMessage(ChatMessage):
     def __init__(self, text: str):
@@ -90,6 +117,23 @@ class UserMessage(ChatMessage):
     def clone(self) -> UserMessage:
         msg = UserMessage(self.text)
         msg.created_at = self.created_at
+        return msg
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "user",
+            "text": self.text,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UserMessage:
+        msg = cls(data.get("text", ""))
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
         return msg
 
 
@@ -143,6 +187,23 @@ class AssistantMessage(ChatMessage):
         msg.created_at = self.created_at
         return msg
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "assistant",
+            "markdown": self.markdown,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AssistantMessage:
+        msg = cls(data.get("markdown", ""))
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
+        return msg
+
 
 class CompactionCheckpointMessage(ChatMessage):
     def __init__(self, summary: str = "", tokens_compacted: int = 0):
@@ -167,6 +228,27 @@ class CompactionCheckpointMessage(ChatMessage):
     def clone(self) -> CompactionCheckpointMessage:
         msg = CompactionCheckpointMessage(self.summary, self.tokens_compacted)
         msg.created_at = self.created_at
+        return msg
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "checkpoint",
+            "summary": self.summary,
+            "tokens_compacted": self.tokens_compacted,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CompactionCheckpointMessage:
+        msg = cls(
+            summary=data.get("summary", ""),
+            tokens_compacted=int(data.get("tokens_compacted", 0)),
+        )
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
         return msg
 
 
@@ -403,6 +485,50 @@ class ToolBundleMessage(ChatMessage):
         msg.created_at = self.created_at
         return msg
 
+    def to_dict(self) -> dict[str, Any]:
+        calls_data = []
+        for c in self.calls:
+            calls_data.append({
+                "call_id": c.call_id,
+                "device": c.device,
+                "command": c.command,
+                "risk": c.risk.value if hasattr(c.risk, "value") else str(c.risk),
+                "output": c.output,
+                "ok": c.ok,
+                "running": False,
+            })
+        return {
+            "type": "tool_bundle",
+            "expanded": self.expanded,
+            "created_at": self.created_at.isoformat(),
+            "calls": calls_data,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolBundleMessage:
+        calls = []
+        for cd in data.get("calls", []):
+            try:
+                risk_val = Risk(cd.get("risk", "read"))
+            except Exception:
+                risk_val = Risk.READ
+            calls.append(ToolCallEntry(
+                call_id=str(cd.get("call_id", "")),
+                device=str(cd.get("device", "")),
+                command=str(cd.get("command", "")),
+                risk=risk_val,
+                output=cd.get("output"),
+                ok=bool(cd.get("ok", True)),
+                running=bool(cd.get("running", False)),
+            ))
+        msg = cls(calls=calls, expanded=bool(data.get("expanded", False)))
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
+        return msg
+
     def create_widget(self) -> Widget:
         w = ToolBundleWidget(self)
         self.widget = w
@@ -492,3 +618,89 @@ class ProposalVerdictMessage(ChatMessage):
         msg = ProposalVerdictMessage(self.change, self.decision)
         msg.created_at = self.created_at
         return msg
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "proposal_verdict",
+            "created_at": self.created_at.isoformat(),
+            "change": {
+                "id": self.change.id,
+                "device": self.change.device,
+                "title": self.change.title,
+                "commands": list(self.change.commands),
+                "risk": self.change.risk.value if hasattr(self.change.risk, "value") else str(self.change.risk),
+                "rationale": self.change.rationale,
+                "rollback": list(self.change.rollback),
+                "before": self.change.before,
+                "after": self.change.after,
+            },
+            "decision": {
+                "approved": self.decision.approved,
+                "commands": list(self.decision.commands),
+                "save_after": self.decision.save_after,
+                "note": self.decision.note,
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProposalVerdictMessage:
+        cd = data.get("change", {})
+        dd = data.get("decision", {})
+        try:
+            risk_val = Risk(cd.get("risk", "read"))
+        except Exception:
+            risk_val = Risk.READ
+        change = ProposedChange(
+            id=str(cd.get("id", "")),
+            device=str(cd.get("device", "")),
+            title=str(cd.get("title", "")),
+            commands=list(cd.get("commands", [])),
+            risk=risk_val,
+            rationale=str(cd.get("rationale", "")),
+            rollback=list(cd.get("rollback", [])),
+            before=str(cd.get("before", "")),
+            after=str(cd.get("after", "")),
+        )
+        decision = ApprovalDecision(
+            approved=bool(dd.get("approved", False)),
+            commands=list(dd.get("commands", [])),
+            save_after=bool(dd.get("save_after", False)),
+            note=str(dd.get("note", "")),
+        )
+        msg = cls(change, decision)
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
+        return msg
+
+
+def serialize_message(msg: ChatMessage) -> dict[str, Any]:
+    if hasattr(msg, "to_dict"):
+        return msg.to_dict()
+    return {
+        "type": "generic",
+        "content": str(msg.render() if hasattr(msg, "render") else ""),
+        "css_class": getattr(msg, "css_class", ""),
+        "created_at": getattr(msg, "created_at", datetime.now()).isoformat(),
+    }
+
+
+def deserialize_message(data: dict[str, Any]) -> Optional[ChatMessage]:
+    if not isinstance(data, dict):
+        return None
+    m_type = data.get("type", "")
+    if m_type == "user":
+        return UserMessage.from_dict(data)
+    elif m_type == "assistant":
+        return AssistantMessage.from_dict(data)
+    elif m_type == "checkpoint":
+        return CompactionCheckpointMessage.from_dict(data)
+    elif m_type == "tool_bundle":
+        return ToolBundleMessage.from_dict(data)
+    elif m_type == "proposal_verdict":
+        return ProposalVerdictMessage.from_dict(data)
+    elif m_type == "generic":
+        return GenericMessage.from_dict(data)
+    return None

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from datetime import datetime
+import logging
 import re
 import uuid
 from typing import Any, Optional
@@ -319,6 +321,29 @@ class WorkspaceScreen(Screen):
     def active_chat_session(self) -> Optional[ChatSession]:
         return next((s for s in self.chat_sessions if s.id == self.active_session_id), None)
 
+    def _persist_session(self, session_id: Optional[str] = None) -> None:
+        sid = session_id or self.active_session_id
+        if not sid:
+            return
+        sess = next((s for s in self.chat_sessions if s.id == sid), None)
+        if not sess:
+            return
+        msgs = list(self.chat_messages.get(sid, []))
+        try:
+            self.run_worker(self._async_save_session(sess, msgs), group=f"save-session-{sid}")
+        except Exception:
+            pass
+
+    async def _async_save_session(self, sess: ChatSession, msgs: list[ChatMessage]) -> None:
+        try:
+            if hasattr(self.app, "backend"):
+                if hasattr(self.app.backend, "save_chat_session"):
+                    await self.app.backend.save_chat_session(sess, msgs, is_active=(sess.id == self.active_session_id))
+                if hasattr(self.app.backend, "save_session_index"):
+                    await self.app.backend.save_session_index(self.chat_sessions, self.active_session_id)
+        except Exception as exc:
+            logger.debug("Failed saving session %s: %s", sess.id, exc)
+
     def create_chat_session(self) -> ChatSession:
         self._session_counter += 1
         sess = ChatSession(
@@ -328,6 +353,7 @@ class WorkspaceScreen(Screen):
         )
         self.chat_sessions.append(sess)
         self.chat_messages[sess.id] = []
+        self._persist_session(sess.id)
         return sess
 
     def fork_chat_session(self, source_session_id: str) -> ChatSession:
@@ -378,6 +404,7 @@ class WorkspaceScreen(Screen):
             except Exception as exc:
                 logger.debug("Failed to clone backend session memory: %s", exc)
 
+        self._persist_session(new_sess.id)
         return new_sess
 
     def _sync_agent_select(self) -> None:
@@ -414,6 +441,11 @@ class WorkspaceScreen(Screen):
             self._scroll()
         self.refresh_session_list()
         self.update_bars()
+        try:
+            if hasattr(self.app, "backend") and hasattr(self.app.backend, "save_session_index"):
+                self.run_worker(self.app.backend.save_session_index(self.chat_sessions, self.active_session_id), group="save-index")
+        except Exception:
+            pass
 
     def refresh_session_list(self) -> None:
         try:
@@ -439,6 +471,15 @@ class WorkspaceScreen(Screen):
         try:
             if hasattr(self.app.backend, "_llm_engine"):
                 self.app.backend._llm_engine.memory.sessions.pop(session_id, None)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self.app, "backend"):
+                if hasattr(self.app.backend, "delete_chat_session_persisted"):
+                    self.run_worker(self.app.backend.delete_chat_session_persisted(session_id), group=f"del-session-{session_id}")
+                if hasattr(self.app.backend, "save_session_index"):
+                    self.run_worker(self.app.backend.save_session_index(self.chat_sessions, self.active_session_id), group="save-index")
         except Exception:
             pass
 
@@ -675,9 +716,33 @@ class WorkspaceScreen(Screen):
     async def on_mount(self) -> None:
         for s in self.app.sessions:  # type: ignore[attr-defined]
             self._start_pump(s)
+
+        # Restore saved chat sessions from backend if present
+        if not self.chat_sessions and hasattr(self.app, "backend") and hasattr(self.app.backend, "load_chat_sessions"):
+            try:
+                loaded, last_active_id = await self.app.backend.load_chat_sessions()
+                if loaded:
+                    self.chat_sessions = loaded
+                    self._session_counter = max((s.num for s in loaded), default=0)
+                    target_id = last_active_id if (last_active_id and any(s.id == last_active_id for s in loaded)) else loaded[0].id
+                    self.active_session_id = target_id
+                    for s in loaded:
+                        try:
+                            ui_msgs, mem_msgs = await self.app.backend.load_chat_session_details(s.id)
+                            self.chat_messages[s.id] = ui_msgs
+                            if mem_msgs and hasattr(self.app.backend, "set_session_messages"):
+                                self.app.backend.set_session_messages(s.id, mem_msgs)
+                        except Exception:
+                            self.chat_messages[s.id] = []
+            except Exception as exc:
+                logger.debug("Failed loading chat sessions: %s", exc)
+
         if not self.chat_sessions:
             sess = self.create_chat_session()
             self.active_session_id = sess.id
+        elif not self.active_session_id:
+            self.active_session_id = self.chat_sessions[0].id
+
         self.refresh_session_list()
         self.refresh_device_list()
         self.refresh_console_devices()
@@ -691,7 +756,10 @@ class WorkspaceScreen(Screen):
             s_box.set_prompt_input(p_inp)
         except Exception:
             pass
-        self._welcome()
+        if self.active_session_id and self.chat_messages.get(self.active_session_id):
+            self._switch_to_session(self.active_session_id)
+        else:
+            self._welcome()
         self.query_one("#prompt", Input).focus()
 
     # ---- chat primitives ----
@@ -1128,6 +1196,17 @@ class WorkspaceScreen(Screen):
         self.query_one("#prompt", Input).value = ""
         user_msg = UserMessage(text)
         self._mount_message(user_msg)
+        self._persist_session(self.active_session_id)
+        if hasattr(self.app, "backend") and hasattr(self.app.backend, "append_session_transcript") and self.active_chat_session:
+            t_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            entry = f"### [{t_stamp}] USER\n{text}"
+            try:
+                self.run_worker(
+                    self.app.backend.append_session_transcript(self.active_chat_session, entry, getattr(self.app, "settings", None)),
+                    group="append-transcript",
+                )
+            except Exception:
+                pass
         self._run_agent(text)
 
     @on(Select.Changed, "#agent-select")
@@ -1138,6 +1217,7 @@ class WorkspaceScreen(Screen):
                 self.active_agent_id = new_id
                 if self.active_chat_session:
                     self.active_chat_session.agent_id = new_id
+                    self._persist_session(self.active_session_id)
                 agent = get_agent(new_id)
                 if agent:
                     try:
@@ -1169,6 +1249,7 @@ class WorkspaceScreen(Screen):
             self.active_agent_id = to_plan_agent(self.active_agent_id)
             self._sync_agent_select()
             self.update_bars()
+            self._persist_session(self.active_session_id)
 
             plan_banner = (
                 "### Plan Mode Activated\n\n"
@@ -1202,6 +1283,7 @@ class WorkspaceScreen(Screen):
             self.active_agent_id = to_build_agent(self.active_agent_id)
             self._sync_agent_select()
             self.update_bars()
+            self._persist_session(self.active_session_id)
 
             build_banner = (
                 "### Build Mode Activated\n\n"
@@ -1291,6 +1373,7 @@ class WorkspaceScreen(Screen):
             self.active_agent_id = picked
             if self.active_chat_session:
                 self.active_chat_session.agent_id = picked
+                self._persist_session(self.active_session_id)
             try:
                 self.query_one("#agent-select", Select).value = picked
             except Exception:
@@ -1329,6 +1412,7 @@ class WorkspaceScreen(Screen):
                 sess.title = ai_title
                 self.refresh_session_list()
                 self.update_bars()
+                self._persist_session(sess.id)
         except Exception:
             pass
 
@@ -1427,6 +1511,28 @@ class WorkspaceScreen(Screen):
                                title_align="left"))
         finally:
             self._set_busy(False)
+            self._persist_session(self.active_session_id)
+            if hasattr(self.app, "backend") and hasattr(self.app.backend, "append_session_transcript") and self.active_chat_session:
+                try:
+                    msgs = self.chat_messages.get(self.active_session_id or "", [])
+                    if msgs:
+                        last_m = msgs[-1]
+                        t_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        t_body = ""
+                        if isinstance(last_m, AssistantMessage):
+                            t_body = f"### [{t_stamp}] ASSISTANT\n{last_m.markdown}"
+                        elif isinstance(last_m, ToolBundleMessage):
+                            lines = []
+                            for c in last_m.calls:
+                                lines.append(f"$ {c.command} ({c.device})\n{c.output or ''}")
+                            t_body = f"### [{t_stamp}] OPERATIONS\n" + "\n".join(lines)
+                        if t_body:
+                            self.run_worker(
+                                self.app.backend.append_session_transcript(self.active_chat_session, t_body, getattr(self.app, "settings", None)),
+                                group="append-transcript",
+                            )
+                except Exception:
+                    pass
 
     async def _handle_proposal(self, c: ProposedChange) -> None:
         app = self.app
@@ -1878,6 +1984,7 @@ class WorkspaceScreen(Screen):
             ))
         finally:
             self._set_busy(False)
+            self._persist_session(sess_id)
 
     def action_fork(self) -> None:
         """Clone the active conversation into a new session and switch to it immediately."""
@@ -2002,6 +2109,7 @@ class WorkspaceScreen(Screen):
         sess.has_prompt = True  # Prevent automatic AI titler from overwriting the user's custom title
         self.refresh_session_list()
         self.update_bars()
+        self._persist_session(sess.id)
         self.notify(f"Session renamed to: {title}", title="Session Renamed")
         self._bubble(Panel(
             Text(f"Session renamed to: {title}", style="bold #e4e4e7"),
@@ -2028,4 +2136,5 @@ class WorkspaceScreen(Screen):
                     self.app.backend.clear_session_memory(self.active_session_id)
                 except Exception:
                     pass
+            self._persist_session(self.active_session_id)
         self._welcome()
