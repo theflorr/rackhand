@@ -20,7 +20,7 @@ from ui.modals import UpdateModal
 from ui.styles import _rackhand_console_theme
 from updater import check_for_update
 
-VERSION = "v1.2"
+VERSION = "v1.3"
 
 
 class RackhandApp(App):
