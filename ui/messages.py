@@ -705,6 +705,40 @@ class ProposalVerdictMessage(ChatMessage):
         return msg
 
 
+class SystemNoticeMessage(ChatMessage):
+    def __init__(self, text: str = "You interrupted the response"):
+        super().__init__(css_class="system-notice")
+        self.text = text
+
+    def render(self) -> Text:
+        t = Text()
+        t.append("― ", style="dim #555555")
+        t.append(self.text, style="italic #888888")
+        return t
+
+    def clone(self) -> SystemNoticeMessage:
+        msg = SystemNoticeMessage(self.text)
+        msg.created_at = self.created_at
+        return msg
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "system_notice",
+            "text": self.text,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SystemNoticeMessage:
+        msg = cls(text=data.get("text", "You interrupted the response"))
+        if "created_at" in data:
+            try:
+                msg.created_at = datetime.fromisoformat(data["created_at"])
+            except Exception:
+                pass
+        return msg
+
+
 def serialize_message(msg: ChatMessage) -> dict[str, Any]:
     if hasattr(msg, "to_dict"):
         return msg.to_dict()
@@ -730,6 +764,8 @@ def deserialize_message(data: dict[str, Any]) -> Optional[ChatMessage]:
         return ToolBundleMessage.from_dict(data)
     elif m_type == "proposal_verdict":
         return ProposalVerdictMessage.from_dict(data)
+    elif m_type == "system_notice":
+        return SystemNoticeMessage.from_dict(data)
     elif m_type == "generic":
         return GenericMessage.from_dict(data)
     return None

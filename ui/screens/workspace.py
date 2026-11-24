@@ -36,7 +36,7 @@ from models import (
 )
 from ui.messages import (
     AssistantMessage, ChatMessage, CompactionCheckpointMessage, GenericMessage,
-    ProposalVerdictMessage, ThemedMarkdown, ToolBundleMessage, ToolCallEntry, UserMessage,
+    ProposalVerdictMessage, SystemNoticeMessage, ThemedMarkdown, ToolBundleMessage, ToolCallEntry, UserMessage,
 )
 from ui.suggestions import CommandSuggestionsBox, PromptInput
 from agents import (
@@ -273,6 +273,7 @@ class WorkspaceScreen(Screen):
         Binding("ctrl+l", "clear_chat", "Clear"),
         Binding("f4", "focus_prompt", "Focus"),
         Binding("alt+m", "send_mid_turn", "Send Mid-Turn"),
+        Binding("escape", "interrupt_agent", "Stop", show=False),
         Binding("ctrl+q", "app.quit", "Quit"),
     ]
 
@@ -1335,6 +1336,23 @@ class WorkspaceScreen(Screen):
             self.notify(f"Prompt queued ({len(self._prompt_queue)} in queue). Press Alt+M to send mid-turn.", title="Prompt Queued")
             return
 
+        # Check if prompt targets a specific device via @mention
+        mentions = re.findall(r"@([a-zA-Z0-9_.-]+)", display_text)
+        if mentions:
+            for s in getattr(app, "sessions", []):
+                s_name = (s.hostname or (s.profile.name if s.profile else "") or s.id).strip().lower()
+                if any(m.lower() == s_name for m in mentions):
+                    if getattr(app, "active_id", None) != s.id:
+                        app.active_id = s.id
+                        self.refresh_device_list()
+                        self.update_bars()
+                        self._render_console()
+                        try:
+                            self.notify(f"Targeting device: {s.hostname or s.profile.name}", title="Device Mention")
+                        except Exception:
+                            pass
+                    break
+
         if app.active is None and self.current_mode != "plan":
             self.notify("Connect a device first (Ctrl+N).", severity="warning")
             return
@@ -1451,6 +1469,29 @@ class WorkspaceScreen(Screen):
                 pass
         elif self._busy:
             self.update_bars()
+
+    def action_interrupt_agent(self) -> None:
+        """Interrupt active agent execution immediately via Escape key."""
+        if self._busy:
+            self.interrupt_response()
+
+    def interrupt_response(self) -> None:
+        """Cancel running agent worker, clear prompt queue, and cancel backend turn."""
+        if not self._busy:
+            return
+        self._prompt_queue.clear()
+        self._update_queue_ui()
+        try:
+            self.workers.cancel_group(self, "agent")
+        except Exception:
+            for worker in list(self.workers):
+                if getattr(worker, "group", None) == "agent" and getattr(worker, "is_running", False):
+                    worker.cancel()
+        if hasattr(self.app, "backend") and hasattr(self.app.backend, "cancel_turn"):
+            try:
+                self.run_worker(self.app.backend.cancel_turn(), group="cancel-turn")
+            except Exception:
+                pass
 
     def _dispatch_next_queued(self) -> None:
         """Dispatch next queued prompt or command in sequential FIFO order."""
@@ -1853,7 +1894,10 @@ class WorkspaceScreen(Screen):
                                        title_align="left"))
         except asyncio.CancelledError:
             flush_text_buffer()
-            self._bubble(Text("■ execution aborted", style="dim"))
+            if self._pending_mid_turn_msg:
+                self._pending_mid_turn_msg = None
+            self._mount_message(SystemNoticeMessage("You interrupted the response"))
+            self._scroll()
             raise
         except Exception as exc:
             flush_text_buffer()

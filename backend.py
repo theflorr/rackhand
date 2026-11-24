@@ -567,6 +567,7 @@ class RealBackend(Backend):
 
         from vault import get_vault
         self.vault = get_vault()
+        self._profiles_cache: list[DeviceProfile] = []
 
         self._active_sessions: dict[str, DeviceSession] = {}
         self._serial_drivers: dict[str, RealSerialSession] = {}
@@ -706,6 +707,27 @@ class RealBackend(Backend):
 
             return await asyncio.to_thread(_probe_ssh_sync)
 
+    def get_profiles_sync(self) -> list[DeviceProfile]:
+        """Synchronously return cached device profiles or inventory for quick completions."""
+        if hasattr(self, "_profiles_cache") and self._profiles_cache:
+            return list(self._profiles_cache)
+        if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
+            vdata = self.vault.get_profiles()
+            if vdata:
+                res = [DeviceProfile.from_dict(d) for d in vdata if isinstance(d, dict)]
+                self._profiles_cache = res
+                return res
+        elif hasattr(self, "_profiles_file") and self._profiles_file.is_file():
+            try:
+                data = json.loads(self._profiles_file.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    res = [DeviceProfile.from_dict(d) for d in data if isinstance(d, dict)]
+                    self._profiles_cache = res
+                    return res
+            except Exception:
+                pass
+        return []
+
     async def load_profiles(self) -> list[DeviceProfile]:
         # 1. Read existing saved profiles from vault or disk
         if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
@@ -713,6 +735,7 @@ class RealBackend(Backend):
             if vdata:
                 profiles = [DeviceProfile.from_dict(d) for d in vdata if isinstance(d, dict)]
                 if profiles:
+                    self._profiles_cache = profiles
                     return profiles
         elif self._profiles_file.is_file():
             try:
@@ -720,6 +743,7 @@ class RealBackend(Backend):
                 if isinstance(data, list) and data:
                     profiles = [DeviceProfile.from_dict(d) for d in data if isinstance(d, dict)]
                     if profiles:
+                        self._profiles_cache = profiles
                         return profiles
             except Exception:
                 pass
@@ -755,6 +779,7 @@ class RealBackend(Backend):
             updated = [p for p in updated if p.name != profile.name and p.address != profile.address]
             updated.append(profile)
             self.vault.set_profiles([p.to_dict() for p in updated])
+            self._profiles_cache = updated
             return
 
         if self._profiles_file.is_file():
@@ -766,6 +791,7 @@ class RealBackend(Backend):
                 pass
         updated = [p for p in updated if p.name != profile.name and p.address != profile.address]
         updated.append(profile)
+        self._profiles_cache = updated
         try:
             self._profiles_file.write_text(
                 json.dumps([p.to_dict() for p in updated], indent=2),

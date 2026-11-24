@@ -177,3 +177,35 @@ async def test_composer_model_button_sizing():
         assert "gemini-3.8-flash-low" in str(btn.label)
 
 
+@pytest.mark.asyncio
+async def test_dialog_tabbed_content_background_consistency():
+    from textual.app import App
+    from ui.modals.connect import ConnectScreen
+    from ui.styles import APP_CSS
+    from backend import RealBackend
+
+    class DialogTestApp(App):
+        CSS = APP_CSS
+        def on_mount(self):
+            self.backend = RealBackend()
+            self.push_screen(ConnectScreen())
+
+    app = DialogTestApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen._show_form(True)
+        await pilot.pause()
+        dlg = screen.query_one("#cn-dialog")
+        trans = screen.query_one("#transport")
+        pane = screen.query_one("#tab-serial")
+        saved_list = screen.query_one("#saved-list")
+        # Ensure dialog background is theme gray (RGB 17, 17, 17 = #111111)
+        assert dlg.styles.background.rgb == (17, 17, 17)
+        # Ensure tabs and panels inside dialog are transparent rather than pure black #0a0a0a
+        assert trans.styles.background.a == 0
+        assert pane.styles.background.a == 0
+        assert saved_list.styles.background.a == 0
+
+
+

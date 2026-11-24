@@ -36,9 +36,129 @@ class CommandSuggestion:
         return self.completion if self.completion else (self.value + " ")
 
 
-def get_suggestions(raw_text: str, app: Any = None) -> list[CommandSuggestion]:
+def get_device_suggestions(mention_query: str, app: Any = None) -> list[CommandSuggestion]:
+    """Return device completion suggestions for @mentions in chat."""
+    devices: list[CommandSuggestion] = []
+    seen_keys: set[str] = set()
+
+    # 1. Connected device sessions
+    sessions = getattr(app, "sessions", []) if app else []
+    active_id = getattr(app, "active_id", None) if app else None
+
+    for s in sessions:
+        name = s.hostname or (s.profile.name if s.profile else "") or s.id
+        clean_name = name.strip()
+        if not clean_name:
+            continue
+        key = clean_name.lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        vendor = ""
+        if s.profile and s.profile.vendor:
+            vendor = getattr(s.profile.vendor, "value", str(s.profile.vendor))
+        host = ""
+        if s.profile:
+            if s.profile.ssh and s.profile.ssh.host:
+                host = s.profile.ssh.host
+            elif s.profile.serial and s.profile.serial.port:
+                host = s.profile.serial.port
+            else:
+                host = s.profile.address
+        desc_parts = []
+        if vendor:
+            desc_parts.append(vendor)
+        if host:
+            desc_parts.append(host)
+        is_active = (s.id == active_id)
+        desc_parts.append("● Active" if is_active else "● Connected")
+        desc = " · ".join(desc_parts)
+
+        q = mention_query.lower()
+        if not q or q in key or (host and q in host.lower()):
+            devices.append(CommandSuggestion(
+                value=f"@{clean_name}",
+                display=f"@{clean_name}",
+                description=desc,
+                category="Device",
+                completion=f"@{clean_name} ",
+            ))
+
+    # 2. Saved profiles in backend inventory
+    backend = getattr(app, "backend", None) if app else None
+    saved_profiles: list[Any] = []
+    if backend:
+        if hasattr(backend, "get_profiles_sync"):
+            try:
+                saved_profiles = backend.get_profiles_sync()
+            except Exception:
+                pass
+        elif hasattr(backend, "_profiles_cache"):
+            saved_profiles = getattr(backend, "_profiles_cache", [])
+
+    for p in saved_profiles:
+        name = getattr(p, "name", "")
+        if not name:
+            continue
+        clean_name = name.strip()
+        key = clean_name.lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        vendor = getattr(getattr(p, "vendor", None), "value", str(getattr(p, "vendor", "")))
+        host = ""
+        if hasattr(p, "ssh") and getattr(p, "ssh", None) and getattr(p.ssh, "host", None):
+            host = p.ssh.host
+        elif hasattr(p, "serial") and getattr(p, "serial", None) and getattr(p.serial, "port", None):
+            host = p.serial.port
+        elif hasattr(p, "address"):
+            host = p.address
+        desc_parts = []
+        if vendor:
+            desc_parts.append(vendor)
+        if host:
+            desc_parts.append(host)
+        desc_parts.append("Saved")
+        desc = " · ".join(desc_parts)
+
+        q = mention_query.lower()
+        if not q or q in key or (host and q in host.lower()):
+            devices.append(CommandSuggestion(
+                value=f"@{clean_name}",
+                display=f"@{clean_name}",
+                description=desc,
+                category="Device",
+                completion=f"@{clean_name} ",
+            ))
+
+    if not devices and not mention_query:
+        devices.append(CommandSuggestion(
+            value="@",
+            display="@<device>",
+            description="No devices connected (+ connect device or Ctrl+N)",
+            category="Device",
+            completion="@",
+        ))
+
+    return devices
+
+
+def get_suggestions(raw_text: str, app: Any = None, cursor_pos: Optional[int] = None) -> list[CommandSuggestion]:
     if not raw_text:
         return []
+
+    # Check for @ mention at cursor position or end of text
+    text_to_check = raw_text[:cursor_pos] if cursor_pos is not None else raw_text
+    at_idx = text_to_check.rfind("@")
+    if at_idx != -1:
+        # Verify @ is at start of text or preceded by whitespace / punctuation
+        if at_idx == 0 or text_to_check[at_idx - 1].isspace() or text_to_check[at_idx - 1] in ('(', '[', '{', ':', '"', '\''):
+            mention_token = text_to_check[at_idx + 1:]
+            # Ensure user is currently typing the mention without spaces
+            if not any(c.isspace() for c in mention_token):
+                return get_device_suggestions(mention_token, app)
 
     val = raw_text
     trimmed = val.strip()
@@ -216,6 +336,7 @@ class CommandSuggestionsBox(Widget):
             "agent": "agents",
             "command": "commands",
             "network": "cli",
+            "device": "devices",
         }
         title_text = cat_labels.get(cat, cat)
 
@@ -528,9 +649,29 @@ class PromptInput(Input):
 
     def apply_completion(self, sel: CommandSuggestion) -> None:
         completion = sel.get_completion()
+        box = self.suggestions_box
+        if sel.category.lower() == "device" or completion.startswith("@"):
+            cur_pos = self.cursor_position
+            text_before = self.value[:cur_pos]
+            at_idx = text_before.rfind("@")
+            if at_idx != -1:
+                prefix = self.value[:at_idx]
+                suffix = self.value[cur_pos:]
+                if completion.endswith(" ") and suffix.startswith(" "):
+                    suffix = suffix[1:]
+                self.value = prefix + completion + suffix
+                self.cursor_position = len(prefix) + len(completion)
+                if box:
+                    box.hide_suggestions()
+                self._sync_multiline_height()
+                self.focus()
+                return
+
         self.value = completion
         self.cursor_position = len(self.value)
-        self._update_suggestions()
+        if box:
+            box.hide_suggestions()
+        self._sync_multiline_height()
         self.focus()
 
     def on_key(self, event: events.Key) -> None:
@@ -595,11 +736,22 @@ class PromptInput(Input):
                 event.stop()
                 box.hide_suggestions()
                 return
+            ws = self.screen
+            if ws and getattr(ws, "_busy", False) and hasattr(ws, "interrupt_response"):
+                event.prevent_default()
+                event.stop()
+                ws.interrupt_response()
+                return
 
         elif event.key == "enter":
             if box and box.is_active:
                 sel = box.get_selected()
-                if sel and self.value.strip().lower() != sel.value.lower():
+                if sel and sel.category.lower() == "device":
+                    event.prevent_default()
+                    event.stop()
+                    self.apply_completion(sel)
+                    return
+                elif sel and self.value.strip().lower() != sel.value.lower():
                     if not sel.value.endswith(" "):
                         self.value = sel.value
                 box.hide_suggestions()
@@ -611,7 +763,7 @@ class PromptInput(Input):
     def _update_suggestions(self) -> None:
         if not self.suggestions_box:
             return
-        matches = get_suggestions(self.value, self.app)
+        matches = get_suggestions(self.value, self.app, cursor_pos=self.cursor_position)
         if matches:
             self.suggestions_box.show_suggestions(matches)
         else:

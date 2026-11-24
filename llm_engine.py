@@ -764,6 +764,13 @@ class RealLLMEngine:
                     stderr=asyncio.subprocess.PIPE
                 )
                 stdout, stderr = await proc.communicate()
+            except asyncio.CancelledError:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                raise
             except Exception as exc:
                 yield AgentError(f"{badge} Failed to launch AGY CLI: {exc}")
                 yield AgentDone(total_prompt_tokens, total_completion_tokens)
@@ -792,6 +799,13 @@ class RealLLMEngine:
                             )
                             stdout, stderr = await retry_proc.communicate()
                             proc = retry_proc
+                        except asyncio.CancelledError:
+                            try:
+                                retry_proc.kill()
+                                await retry_proc.wait()
+                            except Exception:
+                                pass
+                            raise
                         except Exception:
                             pass
                 if proc.returncode != 0:

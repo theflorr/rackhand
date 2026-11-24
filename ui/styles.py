@@ -257,7 +257,7 @@ CollapsibleTitle:hover {
     padding: 0 1;
     margin-right: 2;
 }
-#saved-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
+#saved-list { height: 1fr; border: none; background: transparent; padding: 0; }
 .section { color: #555555; text-style: bold; margin-bottom: 1; padding: 0 0 0 1; }
 
 /* new device button - anchored to bottom of left pane */
@@ -297,16 +297,16 @@ CollapsibleTitle:hover {
 #agent-modal-body { height: 1fr; }
 #agent-list-col { width: 38; height: 100%; border-right: solid #1c1c1c; padding: 0 1 0 0; }
 #agent-search { height: 1; margin: 0 0 1 0; border: none; background: #141414; padding: 0 1; }
-#agent-picker-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
+#agent-picker-list { height: 1fr; border: none; background: transparent; padding: 0; }
 #agent-details-col { width: 1fr; height: 100%; padding-left: 2; }
 #agent-detail-title { height: auto; text-style: bold; margin-bottom: 1; }
 #agent-detail-desc { height: auto; color: #d0d0d0; margin-bottom: 1; }
 #agent-detail-body { height: 1fr; color: #888888; }
 
 /* transport tabs */
-#transport { height: auto; margin-bottom: 1; }
-#transport ContentSwitcher { height: auto; }
-#transport TabPane { height: auto; padding: 0 0 1 0; }
+#transport { height: auto; margin-bottom: 1; background: transparent; }
+#transport ContentSwitcher { height: auto; background: transparent; }
+#transport TabPane { height: auto; padding: 0 0 1 0; background: transparent; }
 
 /* field labels */
 .cn-field-label { color: #777777; margin-bottom: 0; margin-top: 1; height: 1; }
@@ -342,14 +342,14 @@ CollapsibleTitle:hover {
 #prov-body { height: 1fr; }
 #prov-list-col { width: 30; height: 100%; border-right: solid #1c1c1c; padding: 0 1 0 0; }
 #prov-search { height: 1; margin: 0 0 1 0; border: none; background: #141414; padding: 0 1; }
-#prov-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
+#prov-list { height: 1fr; border: none; background: transparent; padding: 0; }
 #prov-form { width: 1fr; height: 100%; padding-left: 2; }
 
 #agent-dialog { width: 92; height: 32; }
 #agent-modal-body { height: 1fr; }
 #agent-list-col { width: 38; height: 100%; border-right: solid #1c1c1c; padding: 0 1 0 0; }
 #agent-search { height: 1; margin: 0 0 1 0; border: none; background: #141414; padding: 0 1; }
-#agent-picker-list { height: 1fr; border: none; background: #0a0a0a; padding: 0; }
+#agent-picker-list { height: 1fr; border: none; background: transparent; padding: 0; }
 #agent-details-col { width: 1fr; height: 100%; padding-left: 2; }
 #agent-detail-title { height: auto; text-style: bold; margin-bottom: 1; }
 #agent-detail-desc { height: auto; color: #d0d0d0; margin-bottom: 1; }
@@ -883,11 +883,21 @@ CollapsibleTitle:hover {
 }
 
 /* main content area */
-#main { width: 1fr; height: 100%; }
+#main {
+    width: 1fr;
+    height: 100%;
+    background: #0a0a0a;
+}
 
 TabbedContent {
-    background: #0a0a0a;
+    background: transparent;
     height: 100%;
+}
+
+.dialog TabbedContent,
+.dialog TabPane,
+.dialog ContentSwitcher {
+    background: transparent;
 }
 
 Tabs {
@@ -941,6 +951,14 @@ TabbedContent TabPane {
 
 #chat { height: 1fr; padding: 0 1; background: #0a0a0a; }
 .bubble { height: auto; margin-bottom: 1; padding: 0 1; }
+.bubble.system-notice {
+    background: transparent;
+    border: none;
+    padding: 0 1;
+    margin-top: 0;
+    margin-bottom: 1;
+    height: auto;
+}
 .bubble.user {
     border-left: thick #444444;
     padding: 0 2;
