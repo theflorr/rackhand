@@ -81,12 +81,6 @@ class RackhandApp(App):
             self.backend.reload_from_vault()
 
         self.settings = await self.backend.load_settings()
-        
-        # Auto-detect and load local subscriptions (Claude, Antigravity, OpenCode, Copilot, etc.)
-        try:
-            await self.backend.auto_import_detected()
-        except Exception:
-            pass
 
         configs = await self.backend.load_provider_configs()
         if not self.provider:
@@ -105,19 +99,48 @@ class RackhandApp(App):
         except Exception:
             pass
 
-        # Auto-connect primary device on boot so user lands straight into live session
-        profiles = await self.backend.load_profiles()
-        if profiles:
-            target = profiles[0]
-            try:
-                s = await self.backend.connect(target, {})
-                self.sessions.append(s)
-                self.active_id = s.id
-            except Exception:
-                pass
-
+        # Push WorkspaceScreen immediately so user lands in UI with zero delay
         await self.push_screen(WorkspaceScreen())
+
+        # Non-blocking background startup tasks: subscription auto-detection, initial device connect, and update check
+        self.run_worker(self._async_startup_background(), group="startup-background")
         self.run_worker(self._check_for_updates(), group="auto-updater")
+
+    async def _async_startup_background(self) -> None:
+        # 1. Auto-detect and load local subscriptions (Claude, Antigravity, OpenCode, Copilot, etc.)
+        try:
+            await self.backend.auto_import_detected()
+            if not self.provider:
+                configs = await self.backend.load_provider_configs()
+                for preferred_key in ["antigravity", "openrouter", "deepseek", "anthropic", "openai", "gemini"]:
+                    cfg = configs.get(preferred_key)
+                    if cfg and cfg.api_key:
+                        self.provider = cfg
+                        break
+                if not self.provider and configs:
+                    self.provider = next(iter(configs.values()))
+                if isinstance(self.screen, WorkspaceScreen):
+                    self.screen.update_bars()
+        except Exception:
+            pass
+
+        # 2. Auto-connect primary device profile in background so user lands into live session
+        try:
+            profiles = await self.backend.load_profiles()
+            if profiles and not self.sessions:
+                target = profiles[0]
+                s = await self.backend.connect(target, {})
+                if s not in self.sessions:
+                    self.sessions.append(s)
+                self.active_id = s.id
+                if isinstance(self.screen, WorkspaceScreen):
+                    self.screen._start_pump(s)
+                    self.screen.refresh_device_list()
+                    self.screen.refresh_console_devices()
+                    self.screen._render_console()
+                    self.screen.update_bars()
+        except Exception:
+            pass
 
     async def _check_for_updates(self) -> None:
         try:

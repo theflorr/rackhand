@@ -10,11 +10,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-try:
-    from PIL import Image, ImageGrab
-except ImportError:
-    Image = None  # type: ignore[assignment]
-    ImageGrab = None  # type: ignore[assignment]
+Image: Optional[Any] = None
+ImageGrab: Optional[Any] = None
+
+
+def _ensure_pil() -> tuple[Optional[Any], Optional[Any]]:
+    """Lazily load Pillow (PIL) to keep initial app startup fast."""
+    global Image, ImageGrab
+    if Image is None:
+        try:
+            from PIL import Image as _Img, ImageGrab as _ImgGrab
+            Image = _Img
+            ImageGrab = _ImgGrab
+        except ImportError:
+            pass
+    return Image, ImageGrab
 
 
 # Global test overrides for headless test environments
@@ -52,18 +62,19 @@ def get_system_clipboard_image() -> Optional[Any]:
     if _TEST_CLIPBOARD_IMAGE is not None:
         return _TEST_CLIPBOARD_IMAGE
 
-    if Image is None:
+    img_cls, grab_cls = _ensure_pil()
+    if img_cls is None:
         return None
 
     # 1. Standard PIL ImageGrab
-    if ImageGrab is not None and hasattr(ImageGrab, "grabclipboard"):
+    if grab_cls is not None and hasattr(grab_cls, "grabclipboard"):
         try:
-            grabbed = ImageGrab.grabclipboard()
+            grabbed = grab_cls.grabclipboard()
             # On Windows, grabclipboard() might return a list of file paths (CF_HDROP)
             # when copying a file from Explorer. The user requested:
             # "Raw image paths should not work, only pasted images."
             # Therefore, we only accept true PIL Image objects!
-            if isinstance(grabbed, Image.Image):
+            if isinstance(grabbed, img_cls.Image):
                 return grabbed
         except Exception:
             pass
@@ -73,7 +84,7 @@ def get_system_clipboard_image() -> Optional[Any]:
         try:
             res = subprocess.run(["wl-paste", "-t", "image/png"], capture_output=True, timeout=1)
             if res.returncode == 0 and res.stdout:
-                return Image.open(io.BytesIO(res.stdout))
+                return img_cls.open(io.BytesIO(res.stdout))
         except Exception:
             pass
 
@@ -86,7 +97,7 @@ def get_system_clipboard_image() -> Optional[Any]:
                 timeout=1,
             )
             if res.returncode == 0 and res.stdout:
-                return Image.open(io.BytesIO(res.stdout))
+                return img_cls.open(io.BytesIO(res.stdout))
         except Exception:
             pass
 

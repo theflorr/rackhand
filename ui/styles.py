@@ -113,7 +113,7 @@ def fmt_bytes_prompt(chunk: ConsoleChunk) -> Text:
 
 APP_CSS = """
 Screen { background: #0a0a0a; color: #d0d0d0; }
-ModalScreen { align: center middle; background: #000000 75%; }
+ModalScreen { align: center middle; background: #000000 75%; transition: opacity 150ms in_out_cubic; }
 
 .dialog { width: 90%; height: 95%; max-width: 130; max-height: 96%; background: #111111; border: round #333333; padding: 1 2; }
 .dialog.small { width: 90%; max-width: 120; height: 95%; max-height: 96%; border: round #333333; }
@@ -767,6 +767,7 @@ Label { color: #666666; }
     layout: horizontal;
     padding: 0 1;
     background: transparent;
+    transition: background 120ms in_out_cubic;
 }
 .session-row:hover,
 .session-row.hovered {
@@ -822,6 +823,7 @@ Label { color: #666666; }
     background: transparent;
     color: #71717a;
     border: none;
+    transition: background 120ms in_out_cubic, color 120ms in_out_cubic;
 }
 #sidebar Button:hover {
     background: #181818;
@@ -856,6 +858,10 @@ TabbedContent {
     height: 100%;
 }
 
+Tabs Tab {
+    transition: background 150ms in_out_cubic, color 150ms in_out_cubic;
+}
+
 TabbedContent ContentSwitcher, #main ContentSwitcher {
     height: 1fr;
     width: 100%;
@@ -885,6 +891,7 @@ ToolBundleWidget {
     padding: 0 1;
     background: #111111;
     border: round #262626;
+    transition: border 150ms in_out_cubic;
 }
 ToolBundleWidget:hover {
     border: round #383838;
@@ -991,6 +998,7 @@ CommandSuggestionsBox.-visible, #composer-suggestions.-visible {
     border-left: outer #2a3545;
     padding: 0 1;
     align-vertical: top;
+    transition: background 120ms in_out_cubic;
 }
 #composer-box:focus-within {
     border-left: outer #4a658a;
@@ -1353,6 +1361,7 @@ Button {
     border: none;
     background: #1a1a1a;
     color: #777777;
+    transition: background 150ms in_out_cubic, color 150ms in_out_cubic;
 }
 Button:hover {
     background: #222222;

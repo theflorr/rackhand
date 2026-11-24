@@ -293,10 +293,9 @@ async def test_workspace_restore_saved_sessions_flow():
 
     mock_backend = MagicMock()
     mock_backend.load_chat_sessions = AsyncMock(return_value=([sess1, sess2], "ws-2"))
-    mock_backend.load_chat_session_details = AsyncMock(side_effect=[
-        ([UserMessage("Help with IOS")], [{"role": "user", "content": "Help with IOS"}]),
-        ([UserMessage("Help with FortiGate")], [{"role": "user", "content": "Help with FortiGate"}]),
-    ])
+    mock_backend.load_chat_session_details = AsyncMock(return_value=(
+        [UserMessage("Help with FortiGate")], [{"role": "user", "content": "Help with FortiGate"}]
+    ))
     mock_backend.save_chat_session = AsyncMock()
     mock_backend.save_session_index = AsyncMock()
 
@@ -330,8 +329,12 @@ async def test_workspace_restore_saved_sessions_flow():
         assert len(screen.chat_sessions) == 2
         assert screen.active_session_id == "ws-2"
         assert screen._session_counter == 2
-        assert len(screen.chat_messages["ws-1"]) == 1
+        # Active session is eagerly restored on startup
         assert len(screen.chat_messages["ws-2"]) == 1
         screen._switch_to_session.assert_called_with("ws-2")
+
+        # Inactive session ws-1 is loaded lazily on demand
+        await screen._async_load_and_render_session("ws-1")
+        assert len(screen.chat_messages["ws-1"]) == 1
     finally:
         active_app.reset(token)

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 import re
+import time
 import uuid
 from typing import Any, Optional
 
@@ -447,9 +448,30 @@ class WorkspaceScreen(Screen):
                 else:
                     self.active_agent_id = to_build_agent(self.active_agent_id)
             self._sync_agent_select()
+
+        # Lazy load session messages on demand if not already loaded
+        if session_id not in self.chat_messages and hasattr(self.app, "backend") and hasattr(self.app.backend, "load_chat_session_details"):
+            self.run_worker(self._async_load_and_render_session(session_id), group=f"load-session-{session_id}")
+            return
+
+        self._render_active_session()
+
+    async def _async_load_and_render_session(self, session_id: str) -> None:
+        try:
+            ui_msgs, mem_msgs = await self.app.backend.load_chat_session_details(session_id)
+            self.chat_messages[session_id] = ui_msgs
+            if mem_msgs and hasattr(self.app.backend, "set_session_messages"):
+                self.app.backend.set_session_messages(session_id, mem_msgs)
+        except Exception as exc:
+            logger.debug("Failed lazy loading session %s: %s", session_id, exc)
+            self.chat_messages[session_id] = []
+        if self.active_session_id == session_id:
+            self._render_active_session()
+
+    def _render_active_session(self) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         chat.remove_children()
-        messages = self.chat_messages.get(session_id, [])
+        messages = self.chat_messages.get(self.active_session_id, [])
         if not messages:
             self._welcome()
         else:
@@ -761,14 +783,18 @@ class WorkspaceScreen(Screen):
                     self._session_counter = max((s.num for s in loaded), default=0)
                     target_id = last_active_id if (last_active_id and any(s.id == last_active_id for s in loaded)) else loaded[0].id
                     self.active_session_id = target_id
-                    for s in loaded:
-                        try:
-                            ui_msgs, mem_msgs = await self.app.backend.load_chat_session_details(s.id)
-                            self.chat_messages[s.id] = ui_msgs
-                            if mem_msgs and hasattr(self.app.backend, "set_session_messages"):
-                                self.app.backend.set_session_messages(s.id, mem_msgs)
-                        except Exception:
-                            self.chat_messages[s.id] = []
+                    try:
+                        ui_msgs, mem_msgs = await self.app.backend.load_chat_session_details(target_id)
+                        self.chat_messages[target_id] = ui_msgs
+                        if mem_msgs and hasattr(self.app.backend, "set_session_messages"):
+                            self.app.backend.set_session_messages(target_id, mem_msgs)
+                    except Exception:
+                        self.chat_messages[target_id] = []
+
+                    # Preload remaining sessions in background so UI renders immediately
+                    other_sessions = [s for s in loaded if s.id != target_id]
+                    if other_sessions:
+                        self.run_worker(self._async_preload_sessions(other_sessions), group="preload-sessions")
             except Exception as exc:
                 logger.debug("Failed loading chat sessions: %s", exc)
 
@@ -798,6 +824,17 @@ class WorkspaceScreen(Screen):
         else:
             self._welcome()
         self.query_one("#prompt", Input).focus()
+
+    async def _async_preload_sessions(self, sessions_to_preload: list[ChatSession]) -> None:
+        for s in sessions_to_preload:
+            if s.id not in self.chat_messages:
+                try:
+                    ui_msgs, mem_msgs = await self.app.backend.load_chat_session_details(s.id)
+                    self.chat_messages[s.id] = ui_msgs
+                    if mem_msgs and hasattr(self.app.backend, "set_session_messages"):
+                        self.app.backend.set_session_messages(s.id, mem_msgs)
+                except Exception:
+                    self.chat_messages[s.id] = []
 
     # ---- chat primitives ----
     def _scroll(self) -> None:
@@ -1019,7 +1056,11 @@ class WorkspaceScreen(Screen):
 
         try:
             status_text = Text()
-            if self.current_mode == "plan":
+            if self._busy:
+                frame = self.SPINNER_FRAMES[self._spinner_idx]
+                status_text.append(f"{frame} ", style="bold #38bdf8")
+                status_text.append("Thinking & executing...  ", style="bold #e0e0e0")
+            elif self.current_mode == "plan":
                 status_text.append("[PLAN MODE]  ", style="bold #e4e4e7")
             count = len(self.app.sessions)
             if count > 0:
@@ -1389,11 +1430,13 @@ class WorkspaceScreen(Screen):
         if self._pending_mid_turn_msg:
             self._pending_mid_turn_msg.spinner_frame = frame
             self._pending_mid_turn_msg.update_widget()
-        try:
-            stat = self.query_one("#composer-status", Static)
-            stat.update(f"{frame} Sending prompt to agent mid-turn... (Alt+M)")
-        except Exception:
-            pass
+            try:
+                stat = self.query_one("#composer-status", Static)
+                stat.update(f"{frame} Sending prompt to agent mid-turn... (Alt+M)")
+            except Exception:
+                pass
+        elif self._busy:
+            self.update_bars()
 
     def _dispatch_next_queued(self) -> None:
         """Dispatch next queued prompt or command in sequential FIFO order."""
@@ -1646,6 +1689,11 @@ class WorkspaceScreen(Screen):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        if busy:
+            self._start_spinner()
+        elif not self._pending_mid_turn_msg:
+            self._stop_spinner()
+        self.update_bars()
 
     def _needs_modal(self, c: ProposedChange) -> bool:
         mode = self.app.settings.approval_mode  # type: ignore[attr-defined]
@@ -1686,6 +1734,23 @@ class WorkspaceScreen(Screen):
 
         active_assistant_msg: Optional[AssistantMessage] = None
         active_tool_bundle: Optional[ToolBundleMessage] = None
+        text_buffer = ""
+        last_flush_time = 0.0
+        FLUSH_INTERVAL = 0.035  # ~30 FPS throttling for smooth rendering
+
+        def flush_text_buffer() -> None:
+            nonlocal active_assistant_msg, text_buffer, last_flush_time
+            if not text_buffer:
+                return
+            if active_assistant_msg is None:
+                active_assistant_msg = AssistantMessage(markdown=text_buffer)
+                self._mount_message(active_assistant_msg)
+            else:
+                active_assistant_msg.markdown += text_buffer
+                active_assistant_msg.update_widget()
+                self._scroll()
+            text_buffer = ""
+            last_flush_time = time.monotonic()
 
         agent_spec = resolve_agent(self.active_agent_id, app.active)
         is_plan = (self.current_mode == "plan")
@@ -1702,15 +1767,13 @@ class WorkspaceScreen(Screen):
             ):
                 if isinstance(ev, AgentText):
                     active_tool_bundle = None
-                    if active_assistant_msg is None:
-                        active_assistant_msg = AssistantMessage(markdown=ev.delta)
-                        self._mount_message(active_assistant_msg)
-                    else:
-                        active_assistant_msg.markdown += ev.delta
-                        active_assistant_msg.update_widget()
-                        self._scroll()
+                    text_buffer += ev.delta
+                    now = time.monotonic()
+                    if now - last_flush_time >= FLUSH_INTERVAL or len(text_buffer) >= 120:
+                        flush_text_buffer()
 
                 elif isinstance(ev, AgentToolCall):
+                    flush_text_buffer()
                     active_assistant_msg = None
                     entry = ToolCallEntry(
                         call_id=ev.call_id,
@@ -1751,11 +1814,13 @@ class WorkspaceScreen(Screen):
                             pass
 
                 elif isinstance(ev, AgentProposal):
+                    flush_text_buffer()
                     active_assistant_msg = None
                     active_tool_bundle = None
                     await self._handle_proposal(ev.change)
 
                 elif isinstance(ev, AgentDone):
+                    flush_text_buffer()
                     active_assistant_msg = None
                     active_tool_bundle = None
                     active_sess = self.active_chat_session
@@ -1767,17 +1832,21 @@ class WorkspaceScreen(Screen):
                     self.update_bars()
 
                 elif isinstance(ev, AgentError):
+                    flush_text_buffer()
                     active_assistant_msg = None
                     active_tool_bundle = None
                     self._bubble(Panel(Text(ev.message, style="bold #f87171"), title="Error", border_style="#7f1d1d",
                                        title_align="left"))
         except asyncio.CancelledError:
+            flush_text_buffer()
             self._bubble(Text("■ execution aborted", style="dim"))
             raise
         except Exception as exc:
+            flush_text_buffer()
             self._bubble(Panel(Text(str(exc), style="bold #f87171"), title="Agent Error", border_style="#7f1d1d",
                                title_align="left"))
         finally:
+            flush_text_buffer()
             self._set_busy(False)
             self._stop_spinner()
             self._persist_session(self.active_session_id)
