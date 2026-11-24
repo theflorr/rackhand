@@ -92,3 +92,54 @@ async def test_thinking_spinner_ticks_while_busy():
     screen._set_busy(False)
     assert screen._busy is False
     assert screen._spinner_timer is None
+
+
+@pytest.mark.asyncio
+async def test_tabs_styling_equal_and_no_block_highlight():
+    from textual.app import App
+    from textual.widgets import Input, TabbedContent, TabPane
+    from textual.widgets._tabbed_content import ContentTabs, ContentTab
+    from ui.styles import APP_CSS
+
+    class TabTestApp(App):
+        CSS = APP_CSS
+
+        def compose(self):
+            with TabbedContent(id="main", initial="tab-agent"):
+                with TabPane("agent", id="tab-agent"):
+                    yield Input(id="prompt")
+                with TabPane("console", id="tab-console"):
+                    yield Input(id="console-input")
+                with TabPane("settings", id="tab-settings"):
+                    yield Input(id="setting-input")
+
+    app = TabTestApp()
+    async with app.run_test() as pilot:
+        tabs = app.query_one(ContentTabs)
+
+        # 1. Switch to settings tab
+        await pilot.click("#--content-tab-tab-settings")
+        await pilot.pause()
+        assert tabs.active_tab.id == "--content-tab-tab-settings"
+        # Background must remain transparent (not highlighted with block cursor)
+        assert tabs.active_tab.styles.background.a == 0
+
+        # 2. Switch to console tab
+        await pilot.click("#--content-tab-tab-console")
+        await pilot.pause()
+        assert tabs.active_tab.id == "--content-tab-tab-console"
+        assert tabs.active_tab.styles.background.a == 0
+
+        # 3. Switch to agent tab
+        await pilot.click("#--content-tab-tab-agent")
+        await pilot.pause()
+        assert tabs.active_tab.id == "--content-tab-tab-agent"
+        assert tabs.active_tab.styles.background.a == 0
+
+        # 4. Checkbox focus has no block highlight
+        chk = app.query_one("#setting-input")
+        from ui.styles import _rackhand_theme
+        theme = _rackhand_theme()
+        assert theme.variables.get("block-cursor-background") == "transparent"
+        assert theme.variables.get("block-hover-background") == "transparent"
+

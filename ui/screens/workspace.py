@@ -1245,6 +1245,8 @@ class WorkspaceScreen(Screen):
                 self.query_one("#prompt", PromptInput).focus()
             except Exception:
                 pass
+        elif ev.pane.id == "tab-settings":
+            self._load_settings_tab()
 
     # ---- agent ----
     @on(Input.Submitted, "#prompt")
@@ -2150,11 +2152,6 @@ class WorkspaceScreen(Screen):
             self.query_one("#prompt", Input).focus()
         except Exception:
             pass
-
-    @on(TabbedContent.TabActivated)
-    def _on_tab_changed(self, ev: TabbedContent.TabActivated) -> None:
-        if ev.pane and ev.pane.id == "tab-settings":
-            self._load_settings_tab()
 
     @on(Button.Pressed, "#ws-s-save")
     def _save_settings_tab(self) -> None:

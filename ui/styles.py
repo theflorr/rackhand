@@ -6,10 +6,15 @@ from typing import Optional
 
 from rich.text import Text
 from textual.theme import Theme
-from textual.widgets import Label, Select, Static
+from textual.widget import Widget
+from textual.widgets import Label, RichLog, Select, Static
 
+# Globally disable accidental mouse click/drag text selection on UI chrome, cards, headers, tabs, etc.
+# Only designated widgets (SelectableStatic for chat, RichLog for terminal) allow text selection.
+Widget.ALLOW_SELECT = False
 Static.ALLOW_SELECT = False
 Label.ALLOW_SELECT = False
+RichLog.ALLOW_SELECT = True
 
 
 class MenuStatic(Static):
@@ -159,6 +164,27 @@ Label { color: #666666; }
     background: #202020;
     color: #ffffff;
 }
+Checkbox {
+    border: none;
+    background: transparent;
+    padding: 0;
+    height: 1;
+    color: #888888;
+}
+Checkbox:focus {
+    border: none;
+    background: transparent;
+}
+Checkbox:hover {
+    color: #ffffff;
+}
+Checkbox > .toggle--label,
+Checkbox:focus > .toggle--label,
+Checkbox:blur:hover > .toggle--label {
+    background: transparent;
+    text-style: none;
+}
+
 .dialog Checkbox {
     border: none;
     background: transparent;
@@ -184,6 +210,12 @@ Label { color: #666666; }
     background: #131313;
     border: none;
     padding: 0;
+}
+CollapsibleTitle,
+CollapsibleTitle:focus,
+CollapsibleTitle:hover {
+    text-style: none;
+    background: transparent;
 }
 .dialog CollapsibleTitle {
     height: 1;
@@ -858,8 +890,43 @@ TabbedContent {
     height: 100%;
 }
 
-Tabs Tab {
-    transition: background 150ms in_out_cubic, color 150ms in_out_cubic;
+Tabs {
+    background: transparent;
+}
+
+Tabs:focus {
+    .underline--bar {
+        background: transparent;
+    }
+    & .-active {
+        text-style: none;
+        color: #ffffff;
+        background: transparent;
+    }
+}
+
+Tab {
+    height: 1;
+    padding: 0 2;
+    color: #71717a;
+    background: transparent;
+    transition: color 120ms in_out_cubic;
+}
+
+Tab:hover {
+    color: #e4e4e7;
+    background: transparent;
+}
+
+Tab.-active {
+    color: #ffffff;
+    text-style: bold;
+    background: transparent;
+}
+
+Underline > .underline--bar {
+    color: #38bdf8;
+    background: transparent;
 }
 
 TabbedContent ContentSwitcher, #main ContentSwitcher {
@@ -1459,6 +1526,15 @@ def _rackhand_theme():
         surface="#111111",
         panel="#1a1a1a",
         dark=True,
+        variables={
+            "block-cursor-background": "transparent",
+            "block-cursor-foreground": "#ffffff",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "transparent",
+            "block-cursor-blurred-foreground": "#d0d0d0",
+            "block-cursor-blurred-text-style": "none",
+            "block-hover-background": "transparent",
+        },
     )
 
 
