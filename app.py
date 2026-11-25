@@ -20,7 +20,7 @@ from ui.modals import UpdateModal
 from ui.styles import _rackhand_console_theme
 from updater import check_for_update
 
-VERSION = "v1.3.2"
+VERSION = "v1.3.5"
 
 
 class RackhandApp(App):
@@ -151,7 +151,94 @@ class RackhandApp(App):
             pass
 
 
+def _configure_windows_console_icon() -> None:
+    """Set Windows console AppUserModelID, title, and taskbar/window icon to Rackhand."""
+    import sys
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        from pathlib import Path
+
+        shell32 = ctypes.windll.shell32
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+
+        # Separate taskbar grouping from generic cmd.exe / conhost.exe
+        try:
+            shell32.SetCurrentProcessExplicitAppUserModelID("Rackhand.NetworkAssistant")
+        except Exception:
+            pass
+
+        # Set console window title (and OSC title for Windows Terminal)
+        try:
+            kernel32.SetConsoleTitleW("Rackhand")
+            sys.stdout.write("\x1b]0;Rackhand\x07")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        kernel32.GetConsoleWindow.restype = wintypes.HWND
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+
+        # Locate rackhand.ico (bundled or alongside exe/cwd)
+        ico_candidates = [
+            Path(__file__).resolve().parent / "rackhand.ico",
+            Path(sys.executable).resolve().parent / "rackhand.ico",
+            Path.cwd() / "rackhand.ico",
+        ]
+        ico_path = next((p for p in ico_candidates if p.is_file()), None)
+
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+
+        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+
+        hicon_small = None
+        hicon_big = None
+
+        if ico_path:
+            hicon_small = user32.LoadImageW(None, str(ico_path), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+            hicon_big = user32.LoadImageW(None, str(ico_path), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+
+        # Fallback: extract embedded icon from rackhand.exe if .ico file not found on disk
+        if not hicon_big:
+            try:
+                from updater import find_current_executable
+                exe_path = find_current_executable()
+                if exe_path and exe_path.is_file():
+                    shell32.ExtractIconExW.argtypes = [
+                        wintypes.LPCWSTR, ctypes.c_int,
+                        ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.HICON), wintypes.UINT,
+                    ]
+                    shell32.ExtractIconExW.restype = wintypes.UINT
+                    big_arr = (wintypes.HICON * 1)()
+                    small_arr = (wintypes.HICON * 1)()
+                    if shell32.ExtractIconExW(str(exe_path), 0, big_arr, small_arr, 1) > 0:
+                        hicon_big = big_arr[0] or hicon_big
+                        hicon_small = small_arr[0] or hicon_small
+            except Exception:
+                pass
+
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+    except Exception:
+        pass
+
+
 def main() -> None:
+    _configure_windows_console_icon()
     backend = RealBackend()
     app = RackhandApp(backend=backend)
     app.run()
