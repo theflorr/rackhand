@@ -107,7 +107,7 @@ def build_wheel(base_dir: Path) -> Path:
     pyproject_toml = base_dir / "pyproject.toml"
     original_toml = pyproject_toml.read_text(encoding="utf-8")
     import re
-    base_version = "1.3.6"
+    base_version = "1.3.7"
     m = re.search(r'version\s*=\s*"([^"]+)"', original_toml)
     if m:
         base_version = m.group(1).split(".post")[0].split("+")[0]
@@ -418,9 +418,12 @@ const FIT_JS: &str = include_str!("xterm/addon-fit.min.js");
 #[derive(Debug)]
 enum GuiEvent {
     PtyOutput(String),
+    PtyReady(PtyState),
+    FlushPending,
     ChildExited,
 }
 
+#[derive(Debug)]
 struct PtyState {
     hpc: HPCON,
     in_write: HANDLE,
@@ -857,6 +860,12 @@ pub fn run_gui_host() -> Result<()> {
 
     let pty_slot: Arc<Mutex<Option<PtyState>>> = Arc::new(Mutex::new(None));
     let pty_for_ipc = pty_slot.clone();
+    let webview_ready = Arc::new(Mutex::new(false));
+    let ready_for_ipc = webview_ready.clone();
+    let latest_size: Arc<Mutex<(i16, i16)>> = Arc::new(Mutex::new((120, 30)));
+    let size_for_ipc = latest_size.clone();
+    let pending_b64: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let pending_for_ipc = pending_b64.clone();
     let proxy_for_ipc = proxy.clone();
 
     let initial_font_size = load_font_size_pref();
@@ -869,12 +878,13 @@ pub fn run_gui_host() -> Result<()> {
                 let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if msg_type == "ready" {
                     let cols = val.get("cols").and_then(|v| v.as_i64()).unwrap_or(120) as i16;
-                    let rows = val.get("rows").and_then(|v| v.as_i64()).unwrap_or(36) as i16;
-                    let mut guard = pty_for_ipc.lock().unwrap();
-                    if guard.is_none() {
-                        if let Ok(state) = spawn_conpty_child(cols, rows, proxy_for_ipc.clone()) {
-                            *guard = Some(state);
-                        }
+                    let rows = val.get("rows").and_then(|v| v.as_i64()).unwrap_or(30) as i16;
+                    *size_for_ipc.lock().unwrap() = (cols, rows);
+                    *ready_for_ipc.lock().unwrap() = true;
+                    let _ = proxy_for_ipc.send_event(GuiEvent::FlushPending);
+                    let guard = pty_for_ipc.lock().unwrap();
+                    if let Some(ref state) = *guard {
+                        state.resize(cols, rows);
                     }
                 } else if msg_type == "input" {
                     if let Some(data) = val.get("data").and_then(|v| v.as_str()) {
@@ -889,7 +899,8 @@ pub fn run_gui_host() -> Result<()> {
                     }
                 } else if msg_type == "resize" {
                     let cols = val.get("cols").and_then(|v| v.as_i64()).unwrap_or(120) as i16;
-                    let rows = val.get("rows").and_then(|v| v.as_i64()).unwrap_or(36) as i16;
+                    let rows = val.get("rows").and_then(|v| v.as_i64()).unwrap_or(30) as i16;
+                    *size_for_ipc.lock().unwrap() = (cols, rows);
                     let guard = pty_for_ipc.lock().unwrap();
                     if let Some(ref state) = *guard {
                         state.resize(cols, rows);
@@ -899,12 +910,65 @@ pub fn run_gui_host() -> Result<()> {
         })
         .build(&window)?;
 
+    // Run ensure_ready() + ConPTY Python startup in parallel while WebView2 boots
+    let proxy_boot = proxy.clone();
+    thread::spawn(move || {
+        let hash_file = crate::app::install_dir().join(".project_hash");
+        let installed = std::fs::read_to_string(&hash_file).unwrap_or_default();
+        if !crate::app::install_dir().is_dir() || installed != crate::app::project_version() {
+            let msg = base64::engine::general_purpose::STANDARD
+                .encode(b"\x1b[2mInitializing Rackhand environment (first run)...\r\n\x1b[0m");
+            let _ = proxy_boot.send_event(GuiEvent::PtyOutput(msg));
+        }
+        if let Err(err) = crate::distribution::ensure_ready() {
+            let msg = base64::engine::general_purpose::STANDARD
+                .encode(format!("\r\n\x1b[31mStartup error: {}\x1b[0m\r\n", err).as_bytes());
+            let _ = proxy_boot.send_event(GuiEvent::PtyOutput(msg));
+            return;
+        }
+        match spawn_conpty_child(120, 30, proxy_boot.clone()) {
+            Ok(state) => {
+                let _ = proxy_boot.send_event(GuiEvent::PtyReady(state));
+            }
+            Err(err) => {
+                let msg = base64::engine::general_purpose::STANDARD
+                    .encode(format!("\r\n\x1b[31mFailed to start Rackhand: {}\x1b[0m\r\n", err).as_bytes());
+                let _ = proxy_boot.send_event(GuiEvent::PtyOutput(msg));
+            }
+        }
+    });
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
+            Event::UserEvent(GuiEvent::PtyReady(state)) => {
+                let (cols, rows) = *latest_size.lock().unwrap();
+                if *webview_ready.lock().unwrap() {
+                    state.resize(cols, rows);
+                }
+                *pty_slot.lock().unwrap() = Some(state);
+            }
+            Event::UserEvent(GuiEvent::FlushPending) => {
+                let mut pend = pending_for_ipc.lock().unwrap();
+                for chunk in pend.drain(..) {
+                    let s = format!("window.termWriteB64 && window.termWriteB64('{}');", chunk);
+                    let _ = webview.evaluate_script(&s);
+                }
+            }
             Event::UserEvent(GuiEvent::PtyOutput(b64)) => {
-                let script = format!("window.termWriteB64 && window.termWriteB64('{}');", b64);
-                let _ = webview.evaluate_script(&script);
+                if *webview_ready.lock().unwrap() {
+                    let mut pend = pending_for_ipc.lock().unwrap();
+                    if !pend.is_empty() {
+                        for chunk in pend.drain(..) {
+                            let s = format!("window.termWriteB64 && window.termWriteB64('{}');", chunk);
+                            let _ = webview.evaluate_script(&s);
+                        }
+                    }
+                    let script = format!("window.termWriteB64 && window.termWriteB64('{}');", b64);
+                    let _ = webview.evaluate_script(&script);
+                } else {
+                    pending_for_ipc.lock().unwrap().push(b64);
+                }
             }
             Event::UserEvent(GuiEvent::ChildExited) => {
                 if let Some(state) = pty_slot.lock().unwrap().take() {
@@ -973,13 +1037,12 @@ fn main() -> Result<()> {
         };
     };
 
-    distribution::ensure_ready()?;
-
     #[cfg(windows)]
     if !is_pty_child && !is_cli {
         return gui_host::run_gui_host();
     }
 
+    distribution::ensure_ready()?;
     distribution::run_project()?;
 
     Ok(())
@@ -1075,7 +1138,35 @@ fn main() -> Result<()> {
         }
     }
 
-    let embedded = app::embedded_project();
+    let current_ver = app::project_version();
+    let hash_file = app::install_dir().join(".project_hash");
+    let mut needs_install = false;
+
+    if !app::install_dir().is_dir() {
+        materialize()?;
+        needs_install = true;
+    } else {
+        let installed_ver = fs::read_to_string(&hash_file).unwrap_or_default();
+        if current_ver != installed_ver {
+            if fs::remove_dir_all(app::install_dir()).is_ok() {
+                materialize()?;
+            }
+            needs_install = true;
+        }
+    }
+
+    if needs_install && !app::skip_install() {
+        install_project()?;
+        let _ = fs::write(&hash_file, &current_ver);
+    }"""
+        if target in dist_norm:
+            dist_norm = dist_norm.replace(target, replacement, 1)
+            final_content = dist_norm.replace("\n", "\r\n") if is_crlf else dist_norm
+            dist_rs.write_text(final_content, encoding="utf-8")
+            print("      ✓ Injected fast version-based cache check into distribution.rs.")
+    elif "DefaultHasher" in dist_norm:
+        # Upgrade existing DefaultHasher patch to fast O(1) project_version check
+        old_hash_block = """    let embedded = app::embedded_project();
     let hash_file = app::install_dir().join(".project_hash");
     let mut needs_install = false;
 
@@ -1108,11 +1199,32 @@ fn main() -> Result<()> {
             let _ = fs::write(&hash_file, current_hash);
         }
     }"""
-        if target in dist_norm:
-            dist_norm = dist_norm.replace(target, replacement, 1)
+        new_fast_block = """    let current_ver = app::project_version();
+    let hash_file = app::install_dir().join(".project_hash");
+    let mut needs_install = false;
+
+    if !app::install_dir().is_dir() {
+        materialize()?;
+        needs_install = true;
+    } else {
+        let installed_ver = fs::read_to_string(&hash_file).unwrap_or_default();
+        if current_ver != installed_ver {
+            if fs::remove_dir_all(app::install_dir()).is_ok() {
+                materialize()?;
+            }
+            needs_install = true;
+        }
+    }
+
+    if needs_install && !app::skip_install() {
+        install_project()?;
+        let _ = fs::write(&hash_file, &current_ver);
+    }"""
+        if old_hash_block in dist_norm:
+            dist_norm = dist_norm.replace(old_hash_block, new_fast_block, 1)
             final_content = dist_norm.replace("\n", "\r\n") if is_crlf else dist_norm
             dist_rs.write_text(final_content, encoding="utf-8")
-            print("      ✓ Injected embedded project cache auto-invalidation into distribution.rs.")
+            print("      ✓ Upgraded distribution.rs to fast O(1) version check.")
     elif "Clean up older version directories" not in dist_norm:
         cleanup_hook = """    // Clean up older version directories from previous builds
     if let Some(parent) = app::install_dir().parent() {

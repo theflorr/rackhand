@@ -18,16 +18,35 @@ from typing import Any, AsyncIterator, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ui.messages import ChatMessage
 
-try:
-    import serial
-    import serial.tools.list_ports
-except ImportError:
-    serial = None
+_serial_mod: Any = None
+_serial_checked: bool = False
+_paramiko_mod: Any = None
+_paramiko_checked: bool = False
 
-try:
-    import paramiko
-except ImportError:
-    paramiko = None
+
+def _get_serial() -> Any:
+    global _serial_mod, _serial_checked
+    if not _serial_checked:
+        _serial_checked = True
+        try:
+            import serial as _s
+            import serial.tools.list_ports  # noqa: F401
+            _serial_mod = _s
+        except ImportError:
+            _serial_mod = None
+    return _serial_mod
+
+
+def _get_paramiko() -> Any:
+    global _paramiko_mod, _paramiko_checked
+    if not _paramiko_checked:
+        _paramiko_checked = True
+        try:
+            import paramiko as _p
+            _paramiko_mod = _p
+        except ImportError:
+            _paramiko_mod = None
+    return _paramiko_mod
 
 from llm_engine import RealLLMEngine
 
@@ -585,9 +604,10 @@ class RealBackend(Backend):
     # ---- device discovery & profiles ----------------------------------------
 
     async def list_serial_ports(self) -> list[SerialPortInfo]:
-        if serial is None or not hasattr(serial, "tools") or not hasattr(serial.tools, "list_ports"):
+        serial_mod = _get_serial()
+        if serial_mod is None or not hasattr(serial_mod, "tools") or not hasattr(serial_mod.tools, "list_ports"):
             return []
-        ports = await asyncio.to_thread(serial.tools.list_ports.comports)
+        ports = await asyncio.to_thread(serial_mod.tools.list_ports.comports)
         out = []
         for p in ports:
             out.append(SerialPortInfo(
@@ -611,7 +631,8 @@ class RealBackend(Backend):
         is_serial = transport is Transport.SERIAL or p.upper().startswith("COM") or "/dev/tty" in p
 
         if is_serial:
-            if serial is None:
+            serial_mod = _get_serial()
+            if serial_mod is None:
                 return DeviceProbeResult(False, p, 9600, message="pyserial not available")
 
             def _probe_sync():
@@ -622,12 +643,12 @@ class RealBackend(Backend):
 
                 for b in candidate_bauds:
                     try:
-                        s = serial.Serial(
+                        s = serial_mod.Serial(
                             port=p,
                             baudrate=b,
-                            bytesize=serial.EIGHTBITS,
-                            parity=serial.PARITY_NONE,
-                            stopbits=serial.STOPBITS_ONE,
+                            bytesize=serial_mod.EIGHTBITS,
+                            parity=serial_mod.PARITY_NONE,
+                            stopbits=serial_mod.STOPBITS_ONE,
                             timeout=0.35,
                             write_timeout=0.35,
                             rtscts=False,
@@ -797,18 +818,19 @@ class RealBackend(Backend):
         if profile.transport is Transport.SERIAL:
             if not profile.serial:
                 raise ValueError("Profile missing serial settings")
-            if serial is None:
+            serial_mod = _get_serial()
+            if serial_mod is None:
                 raise RuntimeError("pyserial is not installed for Serial")
             port = profile.serial.port
             baud = profile.serial.baud or 115200
 
             def _open_serial_sync():
-                s = serial.Serial(
+                s = serial_mod.Serial(
                     port=port,
                     baudrate=baud,
-                    bytesize=getattr(serial, f"{profile.serial.data_bits}BITS", serial.EIGHTBITS),
-                    parity={"N": serial.PARITY_NONE, "E": serial.PARITY_EVEN, "O": serial.PARITY_ODD}.get(profile.serial.parity, serial.PARITY_NONE),
-                    stopbits={"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE, "2": serial.STOPBITS_TWO}.get(profile.serial.stop_bits, serial.STOPBITS_ONE),
+                    bytesize=getattr(serial_mod, f"{profile.serial.data_bits}BITS", serial_mod.EIGHTBITS),
+                    parity={"N": serial_mod.PARITY_NONE, "E": serial_mod.PARITY_EVEN, "O": serial_mod.PARITY_ODD}.get(profile.serial.parity, serial_mod.PARITY_NONE),
+                    stopbits={"1": serial_mod.STOPBITS_ONE, "1.5": serial_mod.STOPBITS_ONE_POINT_FIVE, "2": serial_mod.STOPBITS_TWO}.get(profile.serial.stop_bits, serial_mod.STOPBITS_ONE),
                     timeout=0.1,
                     write_timeout=1.0,
                     rtscts=(profile.serial.flow == "rtscts"),
@@ -868,11 +890,12 @@ class RealBackend(Backend):
             # SSH Connection
             if not profile.ssh:
                 raise ValueError("Profile missing SSH settings")
-            if paramiko is None:
+            paramiko_mod = _get_paramiko()
+            if paramiko_mod is None:
                 raise RuntimeError("paramiko is not installed for SSH")
 
             def _open_ssh_sync():
-                client = paramiko.SSHClient()
+                client = paramiko_mod.SSHClient()
                 known_hosts = self._data_dir / "known_hosts"
                 if known_hosts.is_file():
                     try:
@@ -887,10 +910,10 @@ class RealBackend(Backend):
 
                 policy_name = profile.ssh.host_key_policy
                 if policy_name == "strict":
-                    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+                    client.set_missing_host_key_policy(paramiko_mod.RejectPolicy())
                 else:
                     # TOFU / ask: accept new key and persist it to ~/.rackhand/known_hosts
-                    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    client.set_missing_host_key_policy(paramiko_mod.AutoAddPolicy())
 
                 key_file = profile.ssh.key_path if (profile.ssh.auth == "key" and profile.ssh.key_path) else None
                 client.connect(
