@@ -107,7 +107,7 @@ def build_wheel(base_dir: Path) -> Path:
     pyproject_toml = base_dir / "pyproject.toml"
     original_toml = pyproject_toml.read_text(encoding="utf-8")
     import re
-    base_version = "1.3.5"
+    base_version = "1.3.6"
     m = re.search(r'version\s*=\s*"([^"]+)"', original_toml)
     if m:
         base_version = m.group(1).split(".post")[0].split("+")[0]
@@ -483,7 +483,36 @@ pub fn set_app_user_model_id(app_id: &str) {
     }
 }
 
-fn build_html() -> String {
+fn prefs_path() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let dir = std::path::PathBuf::from(home).join(".rackhand");
+        let _ = std::fs::create_dir_all(&dir);
+        return dir.join("gui_prefs.json");
+    }
+    std::env::temp_dir().join("rackhand-webview2").join("gui_prefs.json")
+}
+
+fn load_font_size_pref() -> u32 {
+    let p = prefs_path();
+    if let Ok(raw) = std::fs::read_to_string(&p) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(sz) = val.get("font_size").and_then(|v| v.as_u64()) {
+                return (sz as u32).clamp(9, 32);
+            }
+        }
+    }
+    15
+}
+
+fn save_font_size_pref(size: u32) {
+    let p = prefs_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&p, format!(r#"{{"font_size": {}}}"#, size.clamp(9, 32)));
+}
+
+fn build_html(initial_font_size: u32) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -528,7 +557,7 @@ html, body {{
   const term = new Terminal({{
     cursorBlink: false,
     fontFamily: '"Cascadia Mono", "Cascadia Code", "Consolas", "Courier New", monospace',
-    fontSize: 15,
+    fontSize: {initial_font_size},
     lineHeight: 1.0,
     letterSpacing: 0,
     customGlyphs: true,
@@ -552,6 +581,7 @@ html, body {{
     if (clamped !== term.options.fontSize) {{
       term.options.fontSize = clamped;
       fitAddon.fit();
+      window.ipc.postMessage(JSON.stringify({{ type: 'font_size', size: clamped }}));
       window.ipc.postMessage(JSON.stringify({{ type: 'resize', cols: term.cols, rows: term.rows }}));
     }}
   }}
@@ -610,7 +640,8 @@ html, body {{
 </html>"#,
         xterm_css = XTERM_CSS,
         xterm_js = XTERM_JS,
-        fit_js = FIT_JS
+        fit_js = FIT_JS,
+        initial_font_size = initial_font_size
     )
 }
 
@@ -808,7 +839,7 @@ pub fn run_gui_host() -> Result<()> {
     let icon = Icon::from_rgba(ICON_RGBA.to_vec(), 64, 64).ok();
     let window = WindowBuilder::new()
         .with_title("Rackhand")
-        .with_inner_size(LogicalSize::new(1100.0, 560.0))
+        .with_inner_size(LogicalSize::new(1100.0, 565.0))
         .with_window_icon(icon)
         .build(&event_loop)?;
 
@@ -828,7 +859,8 @@ pub fn run_gui_host() -> Result<()> {
     let pty_for_ipc = pty_slot.clone();
     let proxy_for_ipc = proxy.clone();
 
-    let html = build_html();
+    let initial_font_size = load_font_size_pref();
+    let html = build_html(initial_font_size);
     let webview = WebViewBuilder::new()
         .with_html(html)
         .with_ipc_handler(move |req| {
@@ -850,6 +882,10 @@ pub fn run_gui_host() -> Result<()> {
                         if let Some(ref state) = *guard {
                             state.write_input(data.as_bytes());
                         }
+                    }
+                } else if msg_type == "font_size" {
+                    if let Some(sz) = val.get("size").and_then(|v| v.as_u64()) {
+                        save_font_size_pref(sz as u32);
                     }
                 } else if msg_type == "resize" {
                     let cols = val.get("cols").and_then(|v| v.as_i64()).unwrap_or(120) as i16;
