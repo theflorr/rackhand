@@ -62,7 +62,7 @@ def _read_win_credential(target_name: str) -> tuple[Optional[str], Optional[byte
                 ('Comment', wintypes.LPWSTR),
                 ('LastWritten', wintypes.FILETIME),
                 ('CredentialBlobSize', wintypes.DWORD),
-                ('CredentialBlob', ctypes.POINTER(ctypes.c_byte)),
+                ('CredentialBlob', ctypes.POINTER(ctypes.c_ubyte)),
                 ('Persist', wintypes.DWORD),
                 ('AttributeCount', wintypes.DWORD),
                 ('Attributes', ctypes.c_void_p),
@@ -78,7 +78,7 @@ def _read_win_credential(target_name: str) -> tuple[Optional[str], Optional[byte
         pcred = ctypes.POINTER(CREDENTIAL)()
         if CredReadW(target_name, 1, 0, ctypes.byref(pcred)):
             cred = pcred.contents
-            blob = bytes((cred.CredentialBlob[i] for i in range(cred.CredentialBlobSize)))
+            blob = ctypes.string_at(cred.CredentialBlob, cred.CredentialBlobSize)
             user = cred.UserName
             Advapi32.CredFree(pcred)
             return user, blob
@@ -117,10 +117,14 @@ def _read_json_safe(path: Path) -> Optional[dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                return data
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        if path.suffix.lower() == ".jsonc":
+            raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+            raw = re.sub(r'(?m)^\s*//.*$', "", raw)
+            raw = re.sub(r",\s*([}\]])", r"\1", raw)
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
     except Exception:
         pass
     return None
@@ -286,10 +290,10 @@ def detect_claude() -> Optional[DetectedSubscription]:
             if token:
                 break
 
-    if token or plan:
+    if token:
         clean_plan = str(plan).replace('_', ' ').strip().title() if plan else "Subscription Active"
         account_str = f"Plan: {clean_plan}" if clean_plan else "Claude Code Active"
-        api_token = token or "claude-code-session-token"
+        api_token = token
         source = f"Claude Code ({found_path.name if found_path else '.claude.json'})"
         is_oauth = (
             api_token.startswith("sk-ant-oat")

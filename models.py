@@ -260,6 +260,8 @@ def extract_prompt(text: str) -> Optional[str]:
 def detect_vendor_from_text(text: str) -> Vendor:
     """Detect vendor platform from device banner, version output, or prompt format."""
     lower = text.lower()
+    if any(k in lower for k in ("cisco adaptive security", "adaptive security appliance", "asa55")) or re.search(r"\basa\b", lower):
+        return Vendor.CISCO_ASA
     if any(k in lower for k in ("ios-xe", "ios xe", "catalyst", "c9300", "c9200", "c9500", "cisco ios", "cisco systems")):
         return Vendor.CISCO_IOS
     if any(k in lower for k in ("nx-os", "nexus")):
@@ -268,7 +270,7 @@ def detect_vendor_from_text(text: str) -> Vendor:
         return Vendor.FORTIOS
     if any(k in lower for k in ("junos", "juniper", "srx", "qfx", "ex4300", "ex2300")):
         return Vendor.JUNIPER_JUNOS
-    if any(k in lower for k in ("arista", "eos")):
+    if "arista" in lower or re.search(r"\beos\b", lower):
         return Vendor.ARISTA_EOS
     if any(k in lower for k in ("vyos", "edgeos")):
         return Vendor.VYOS

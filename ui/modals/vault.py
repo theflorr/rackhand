@@ -377,13 +377,10 @@ class VaultUnlockModal(ModalScreen[bool]):
         if confirmed:
             vault = get_vault()
             vault.wipe()
-            self.dismiss(False)
             self.app.push_screen(VaultSetupModal(), self._on_fresh_setup)
 
     def _on_fresh_setup(self, success: bool) -> None:
-        if success:
-            if hasattr(self.app, "_complete_startup"):
-                self.run_worker(self.app._complete_startup(), group="startup")
+        self.dismiss(bool(success))
 
 
 class VaultWipeConfirmModal(ModalScreen[bool]):

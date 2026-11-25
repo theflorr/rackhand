@@ -79,12 +79,12 @@ class TokenUsageEntry:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> TokenUsageEntry:
         return cls(
-            timestamp=float(d.get("ts", time.time())),
-            provider_key=str(d.get("prov", "")),
+            timestamp=float(d.get("ts", d.get("timestamp", time.time()))),
+            provider_key=str(d.get("prov", d.get("provider_key", ""))),
             model=str(d.get("model", "")),
-            tokens_in=int(d.get("in", 0)),
-            tokens_out=int(d.get("out", 0)),
-            session_id=str(d.get("sess", "")),
+            tokens_in=int(d.get("in", d.get("tokens_in", 0))),
+            tokens_out=int(d.get("out", d.get("tokens_out", 0))),
+            session_id=str(d.get("sess", d.get("session_id", ""))),
         )
 
 
@@ -101,6 +101,31 @@ class RateLimitInfo:
     @property
     def has_data(self) -> bool:
         return self.remaining_requests is not None or self.remaining_tokens is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "limit_requests": self.limit_requests,
+            "remaining_requests": self.remaining_requests,
+            "reset_requests_s": self.reset_requests_s,
+            "limit_tokens": self.limit_tokens,
+            "remaining_tokens": self.remaining_tokens,
+            "reset_tokens_s": self.reset_tokens_s,
+            "last_updated": self.last_updated,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RateLimitInfo:
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            limit_requests=d.get("limit_requests"),
+            remaining_requests=d.get("remaining_requests"),
+            reset_requests_s=d.get("reset_requests_s"),
+            limit_tokens=d.get("limit_tokens"),
+            remaining_tokens=d.get("remaining_tokens"),
+            reset_tokens_s=d.get("reset_tokens_s"),
+            last_updated=float(d.get("last_updated", 0.0) or 0.0),
+        )
 
 
 @dataclass
@@ -120,6 +145,33 @@ class ApiQuotaInfo:
             self.credits_remaining is not None
             or self.credits_used is not None
             or bool(self.rate_limit_desc)
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "credits_used": self.credits_used,
+            "credits_limit": self.credits_limit,
+            "credits_remaining": self.credits_remaining,
+            "is_free_tier": self.is_free_tier,
+            "plan_name": self.plan_name,
+            "rate_limit_desc": self.rate_limit_desc,
+            "status_msg": self.status_msg,
+            "last_checked": self.last_checked,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ApiQuotaInfo:
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            credits_used=d.get("credits_used"),
+            credits_limit=d.get("credits_limit"),
+            credits_remaining=d.get("credits_remaining"),
+            is_free_tier=d.get("is_free_tier"),
+            plan_name=d.get("plan_name"),
+            rate_limit_desc=d.get("rate_limit_desc"),
+            status_msg=str(d.get("status_msg", "") or ""),
+            last_checked=float(d.get("last_checked", 0.0) or 0.0),
         )
 
 
@@ -172,18 +224,33 @@ def _parse_int_safe(val: Any) -> Optional[int]:
 def _parse_reset_seconds(val: Any) -> Optional[float]:
     if val is None:
         return None
-    s = str(val).strip().lower()
+    raw = str(val).strip()
+    s = raw.lower()
     try:
         return float(s)
     except Exception:
         pass
-    # Support "2s", "1m30s", "500ms"
+    # Support ISO 8601 timestamps (e.g. Anthropic anthropic-ratelimit-*-reset)
+    if "t" in s and ("-" in s or ":" in s):
+        try:
+            iso_str = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+            dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, dt.timestamp() - time.time())
+        except Exception:
+            pass
+    # Support "2s", "1h30m", "1m30s", "500ms"
     try:
         total = 0.0
         m_ms = re.search(r"(\d+(?:\.\d+)?)\s*ms", s)
         if m_ms:
             total += float(m_ms.group(1)) / 1000.0
             s = s.replace(m_ms.group(0), "")
+        m_h = re.search(r"(\d+(?:\.\d+)?)\s*h", s)
+        if m_h:
+            total += float(m_h.group(1)) * 3600.0
+            s = s.replace(m_h.group(0), "")
         m_m = re.search(r"(\d+(?:\.\d+)?)\s*m", s)
         if m_m:
             total += float(m_m.group(1)) * 60.0
@@ -427,7 +494,7 @@ class UsageTracker:
                         five_h = d.get("five_hour") or {}
                         if five_h:
                             util = float(five_h.get("utilization", 0.0))
-                            rem_frac = max(0.0, min(1.0, 1.0 - (util / 100.0) if util > 1.0 else (1.0 - util)))
+                            rem_frac = max(0.0, min(1.0, 1.0 - (util / 100.0) if util >= 1.0 else (1.0 - util)))
                             resets_at = five_h.get("resets_at")
                             cd_s, cd_disp = parse_cooldown(resets_at, now_ts)
                             windows.append(
@@ -448,7 +515,7 @@ class UsageTracker:
                         seven_d = d.get("seven_day") or d.get("weekly") or {}
                         if seven_d:
                             util = float(seven_d.get("utilization", 0.0))
-                            rem_frac = max(0.0, min(1.0, 1.0 - (util / 100.0) if util > 1.0 else (1.0 - util)))
+                            rem_frac = max(0.0, min(1.0, 1.0 - (util / 100.0) if util >= 1.0 else (1.0 - util)))
                             resets_at = seven_d.get("resets_at")
                             cd_s, cd_disp = parse_cooldown(resets_at, now_ts)
                             windows.append(
@@ -668,16 +735,16 @@ class UsageTracker:
     def _load_from_disk(self) -> None:
         try:
             from vault import get_vault
-            v = get_vault()
-            if v.is_unlocked():
-                entries_data, rl_data, q_data = v.load_usage()
-                if entries_data:
+            vault = get_vault()
+            if vault.is_unlocked():
+                entries_data, rl_data, q_data = vault.load_usage()
+                if entries_data or rl_data or q_data:
                     self.entries = [TokenUsageEntry.from_dict(d) for d in entries_data if isinstance(d, dict)]
                     self.rate_limits = {k: RateLimitInfo.from_dict(val) for k, val in rl_data.items()}
                     self.api_quotas = {k: ApiQuotaInfo.from_dict(val) for k, val in q_data.items()}
                     return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to load usage from vault: %s", exc)
 
         if not self.storage_path.is_file():
             return
@@ -692,21 +759,23 @@ class UsageTracker:
     def _save_to_disk(self) -> None:
         try:
             from vault import get_vault
-            v = get_vault()
-            if v.is_unlocked():
-                v.save_usage(
+            vault = get_vault()
+            if vault.is_unlocked():
+                vault.save_usage(
                     [e.to_dict() for e in self.entries[-2000:]],
-                    {k: v.to_dict() for k, v in self.rate_limits.items()},
-                    {k: v.to_dict() for k, v in self.api_quotas.items()},
+                    {k: val.to_dict() for k, val in self.rate_limits.items()},
+                    {k: val.to_dict() for k, val in self.api_quotas.items()},
                 )
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to save usage to vault: %s", exc)
 
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.storage_path, "w", encoding="utf-8") as f:
+            tmp_path = self.storage_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump([e.to_dict() for e in self.entries[-2000:]], f, indent=2)
+            os.replace(tmp_path, self.storage_path)
         except Exception as exc:
             logger.debug("Failed to save usage history: %s", exc)
 

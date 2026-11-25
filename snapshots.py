@@ -90,6 +90,37 @@ def parse_health_summary(platform: str, health_data: dict[str, str]) -> str:
     return " · ".join(summary_parts) if summary_parts else "Telemetry baseline captured"
 
 
+def _sanitize_dirname(name: str) -> str:
+    """Sanitize a device hostname for safe use as a directory name on Windows and POSIX."""
+    clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", (name or "").strip())
+    clean = clean.replace("..", "_").strip(". ")
+    return clean or "device"
+
+
+def _get_platform(session: Any) -> str:
+    if session is None:
+        return "cisco_ios"
+    v = getattr(session, "vendor", None) or getattr(getattr(session, "profile", None), "vendor", None)
+    if v is not None:
+        return v.value if hasattr(v, "value") else str(v)
+    return getattr(session, "platform", None) or "cisco_ios"
+
+
+async def _collect_health_stats(
+    platform: str,
+    run_command_fn: Callable[[str], Coroutine[Any, Any, Any]],
+) -> dict[str, str]:
+    health_cmds = get_health_commands(platform)
+    results: dict[str, str] = {}
+    for metric, cmd in health_cmds.items():
+        try:
+            h_res = await run_command_fn(cmd)
+            results[metric] = h_res.output if hasattr(h_res, "output") else str(h_res)
+        except Exception:
+            pass
+    return results
+
+
 async def capture_pre_change_snapshot(
     session: Any,
     settings: Settings,
@@ -99,7 +130,7 @@ async def capture_pre_change_snapshot(
     """Pull running config and health statistics, saving locally or on-device."""
     sid = snap_id or generate_snapshot_id()
     hostname = getattr(session, "hostname", "device") or "device"
-    platform = getattr(session, "platform", "cisco_ios") or "cisco_ios"
+    platform = _get_platform(session)
     now_ts = datetime.now()
     ts_str = now_ts.strftime("%Y%m%d_%H%M%S")
     dest = getattr(settings, "snapshot_destination", "local")
@@ -118,15 +149,14 @@ async def capture_pre_change_snapshot(
         try:
             res = await run_command_fn(cfg_cmd)
             config_text = res.output if hasattr(res, "output") else str(res)
-            # Filter out command prompt echoes
             if config_text:
                 snapshot.config_captured = True
         except Exception:
             pass
 
     # Save Configuration
+    vault = None
     if snapshot.config_captured and config_text:
-        vault = None
         try:
             from vault import get_vault
             v = get_vault()
@@ -137,49 +167,40 @@ async def capture_pre_change_snapshot(
 
         if vault:
             vault.save_snapshot(sid, hostname, ts_str, config_text, snapshot.to_dict())
-            snapshot.local_path = f"vault://snapshots/{hostname}/{sid}_{ts_str}.cfg"
+            snapshot.local_path = f"vault://snapshots/{_sanitize_dirname(hostname)}/{sid}_{ts_str}.cfg"
         else:
-            # Determine local storage path
-            base_dir = Path(os.path.expanduser(getattr(settings, "snapshot_dir", "~/.rackhand/snapshots")))
-            dev_dir = base_dir / hostname
-            dev_dir.mkdir(parents=True, exist_ok=True)
-            local_cfg_file = dev_dir / f"{sid}_{ts_str}.cfg"
-
-            try:
-                local_cfg_file.write_text(config_text, encoding="utf-8")
-                snapshot.local_path = str(local_cfg_file)
-            except Exception:
-                pass
+            base_dir = Path(os.path.expanduser(getattr(settings, "snapshot_dir", "~/.rackhand/snapshots"))).resolve()
+            safe_host = _sanitize_dirname(hostname)
+            dev_dir = (base_dir / safe_host).resolve()
+            if dev_dir.is_relative_to(base_dir):
+                dev_dir.mkdir(parents=True, exist_ok=True)
+                local_cfg_file = dev_dir / f"{sid}_{ts_str}.cfg"
+                try:
+                    local_cfg_file.write_text(config_text, encoding="utf-8")
+                    snapshot.local_path = str(local_cfg_file)
+                except Exception:
+                    snapshot.config_captured = False
 
         # If on-device destination requested, issue copy to flash
         if dest == "device":
             device_fname = f"flash:snap_{sid}.cfg"
             snapshot.device_path = device_fname
             try:
-                # E.g. copy running-config flash:snap_ABC12.cfg
                 await run_command_fn(f"copy running-config {device_fname}\r\n")
             except Exception:
                 pass
 
     # 2. Pull Basic Health Statistics (if enabled)
     if getattr(settings, "snapshot_health_stats", True):
-        health_cmds = get_health_commands(platform)
-        health_results: dict[str, str] = {}
-        for metric, cmd in health_cmds.items():
-            try:
-                h_res = await run_command_fn(cmd)
-                out = h_res.output if hasattr(h_res, "output") else str(h_res)
-                health_results[metric] = out
-            except Exception:
-                pass
-
+        health_results = await _collect_health_stats(platform, run_command_fn)
         if health_results:
             snapshot.stats_captured = True
             snapshot.health_baseline = health_results
             snapshot.health_summary = parse_health_summary(platform, health_results)
 
-    # 3. Record snapshot in persistent index
-    _append_snapshot_index(settings, snapshot)
+    # 3. Record snapshot in persistent index (only when not stored in encrypted vault)
+    if not vault:
+        _append_snapshot_index(settings, snapshot)
     return snapshot
 
 
@@ -192,24 +213,16 @@ async def verify_post_change_health(
     if not pre_snapshot.stats_captured or not pre_snapshot.health_baseline:
         return ""
 
-    platform = getattr(session, "platform", "cisco_ios") or "cisco_ios"
-    health_cmds = get_health_commands(platform)
-    post_results: dict[str, str] = {}
-
-    for metric, cmd in health_cmds.items():
-        try:
-            h_res = await run_command_fn(cmd)
-            out = h_res.output if hasattr(h_res, "output") else str(h_res)
-            post_results[metric] = out
-        except Exception:
-            pass
-
+    platform = _get_platform(session)
+    post_results = await _collect_health_stats(platform, run_command_fn)
     post_summary = parse_health_summary(platform, post_results)
-    return f"✓ **Post-Flight Health Verification:** {post_summary} (Baseline preserved against Snapshot `[{pre_snapshot.id}]`)"
+    pre_summary = pre_snapshot.health_summary or parse_health_summary(platform, pre_snapshot.health_baseline)
+    diff_note = "no baseline change detected" if post_summary == pre_summary else f"was: {pre_summary}"
+    return f"✓ **Post-Flight Health Verification:** {post_summary} ({diff_note}; Baseline `[{pre_snapshot.id}]`)"
 
 
 def _append_snapshot_index(settings: Settings, snapshot: Snapshot) -> None:
-    """Append snapshot metadata to snapshots index.json."""
+    """Append snapshot metadata to snapshots index.json atomically."""
     try:
         base_dir = Path(os.path.expanduser(getattr(settings, "snapshot_dir", "~/.rackhand/snapshots")))
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +249,8 @@ def _append_snapshot_index(settings: Settings, snapshot: Snapshot) -> None:
             "health_summary": snapshot.health_summary,
         }
         entries.insert(0, entry)
-        # Keep last 100 snapshots in index
-        idx_file.write_text(json.dumps(entries[:100], indent=2), encoding="utf-8")
+        tmp_file = idx_file.with_suffix(".json.tmp")
+        tmp_file.write_text(json.dumps(entries[:100], indent=2), encoding="utf-8")
+        os.replace(tmp_file, idx_file)
     except Exception:
         pass

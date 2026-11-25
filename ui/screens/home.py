@@ -101,7 +101,8 @@ class HomeScreen(Screen):
         status = Text()
         if ready:
             status.append("ready  ", style="dim")
-            status.append(f"{sessions[0].hostname}  {prov.model}", style="white")  # type: ignore[index]
+            disp_host = sessions[0].hostname or sessions[0].profile.name
+            status.append(f"{disp_host}  {prov.model}", style="white")  # type: ignore[index]
         else:
             missing = []
             if not sessions:
@@ -120,21 +121,26 @@ class HomeScreen(Screen):
         self.run_worker(self._do_quick_connect(), group="quick-connect")
 
     async def _do_quick_connect(self) -> None:
-        profiles = await self.app.backend.load_profiles()  # type: ignore[attr-defined]
-        target = profiles[0] if profiles else None
-        if target:
-            self.notify(f"Connecting to {target.name}...", title="Quick Connect")
-            s = await self.app.backend.connect(target, {})  # type: ignore[attr-defined]
-            self.app.sessions.append(s)  # type: ignore[attr-defined]
-            self.app.active_id = s.id  # type: ignore[attr-defined]
-            self.refresh_cards()
+        try:
+            profiles = await self.app.backend.load_profiles()  # type: ignore[attr-defined]
+            target = profiles[0] if profiles else None
+            if target:
+                self.notify(f"Connecting to {target.name}...", title="Quick Connect")
+                s = await self.app.backend.connect(target, {})  # type: ignore[attr-defined]
+                if not any(existing.id == s.id for existing in self.app.sessions):
+                    self.app.sessions.append(s)  # type: ignore[attr-defined]
+                self.app.active_id = s.id  # type: ignore[attr-defined]
+                self.refresh_cards()
+        except Exception as exc:
+            self.notify(f"Quick connect failed: {exc}", title="Connection Error", severity="error")
 
     def action_device(self) -> None:
         self.app.push_screen(ConnectScreen(), self._got_session)
 
     def _got_session(self, s: Optional[DeviceSession]) -> None:
         if s:
-            self.app.sessions.append(s)  # type: ignore[attr-defined]
+            if not any(existing.id == s.id for existing in self.app.sessions):
+                self.app.sessions.append(s)  # type: ignore[attr-defined]
             self.app.active_id = s.id  # type: ignore[attr-defined]
         self.refresh_cards()
 

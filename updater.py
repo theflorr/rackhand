@@ -153,7 +153,7 @@ async def fetch_latest_release(timeout: float = 10.0) -> Optional[ReleaseInfo]:
             assets = latest.get("assets", [])
             exe_asset = next((a for a in assets if a.get("name", "").lower() == "rackhand.exe"), None)
             if not exe_asset and assets:
-                exe_asset = next((a for a in assets if a.get("name", "").lower().endswith(".exe")), assets[0])
+                exe_asset = next((a for a in assets if a.get("name", "").lower().endswith(".exe")), None)
 
             asset_name = exe_asset.get("name") if exe_asset else None
             asset_url = exe_asset.get("browser_download_url") if exe_asset else None
@@ -219,6 +219,16 @@ async def download_update(
                                 progress_cb(downloaded / total, downloaded, total)
                             except Exception:
                                 pass
+        if total > 0 and downloaded < total:
+            logger.warning("Truncated download for %s (%d/%d bytes)", download_url, downloaded, total)
+            target_path.unlink(missing_ok=True)
+            return False
+        if target_path.suffix.lower() == ".exe":
+            with open(target_path, "rb") as f:
+                if f.read(2) != b"MZ":
+                    logger.warning("Downloaded .exe failed PE magic header check: %s", target_path)
+                    target_path.unlink(missing_ok=True)
+                    return False
         return True
     except Exception as exc:
         logger.warning("Download failed for %s -> %s: %s", download_url, target_path, exc, exc_info=True)
@@ -350,24 +360,26 @@ def apply_windows_update_and_restart(new_exe_path: Path) -> None:
     # Windows running executables cannot be deleted directly while running,
     # but can be replaced via a batch loop after the process exits.
     batch_script = new_exe_path.parent / "_rackhand_apply_update.cmd"
+    # Avoid enabledelayedexpansion so paths containing '!' are never mangled on Windows.
+    src_str = str(new_exe_path).replace('"', "")
+    dst_str = str(current_exe).replace('"', "")
     batch_content = f"""@echo off
-setlocal enabledelayedexpansion
 timeout /t 1 /nobreak >nul
 set RETRY=0
 :retry
 set /a RETRY+=1
-move /y "{new_exe_path}" "{current_exe}" >nul 2>&1
+move /y "{src_str}" "{dst_str}" >nul 2>&1
 if errorlevel 1 (
-    if !RETRY! leq 30 (
+    if %RETRY% leq 30 (
         timeout /t 1 /nobreak >nul
         goto retry
     )
     exit /b 1
 )
-start "" "{current_exe}"
+start "" "{dst_str}"
 del "%~f0"
 """
-    batch_script.write_text(batch_content, encoding="ascii", errors="replace")
+    batch_script.write_text(batch_content, encoding="utf-8", errors="replace")
     subprocess.Popen(
         ["cmd.exe", "/c", str(batch_script)],
         close_fds=True,

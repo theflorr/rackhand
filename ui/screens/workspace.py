@@ -23,8 +23,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import Screen
+from textual.scrollbar import ScrollBar
 from textual.widgets import (
-    Button, Checkbox, Input, Label, OptionList, RichLog, Select, Static, TabbedContent, TabPane,
+    Button, Checkbox, Input, Label, OptionList, RichLog, Select, Static, TabbedContent, TabPane, TextArea,
 )
 from textual.widgets.option_list import Option
 
@@ -329,6 +330,35 @@ class WorkspaceScreen(Screen):
                 self.query_one("#sidebar-divider").remove_class("dragging")
             except Exception:
                 pass
+
+    def on_click(self, event: events.Click) -> None:
+        """Focus the prompt when clicking non-interactive space in the agent tab."""
+        if event.button != 1:
+            return
+        widget = event.widget
+        if widget is None:
+            return
+        try:
+            tabs = self.query_one("#main", TabbedContent)
+            if tabs.active != "tab-agent":
+                return
+            tab_agent = self.query_one("#tab-agent", TabPane)
+        except Exception:
+            return
+        if widget is not tab_agent and tab_agent not in widget.ancestors:
+            return
+        if getattr(self, "selections", None):
+            return
+        interactive = (Button, Select, Checkbox, Input, TextArea, OptionList, CommandSuggestionsBox, ScrollBar)
+        cur = widget
+        while cur is not None and cur is not tab_agent:
+            if isinstance(cur, interactive):
+                return
+            cur = cur.parent
+        try:
+            self.query_one("#prompt", PromptInput).focus()
+        except Exception:
+            pass
 
     @property
     def chat_histories(self) -> dict[str, list[tuple[Any, str]]]:
@@ -1062,64 +1092,14 @@ class WorkspaceScreen(Screen):
         except Exception:
             pass
 
+        self._update_composer_status()
+
         try:
-            status_text = Text()
-            if self._busy:
-                frame = self.SPINNER_FRAMES[self._spinner_idx]
-                status_text.append(f"{frame} ", style="bold #38bdf8")
-                status_text.append("Thinking & executing...  ", style="bold #e0e0e0")
-            elif self.current_mode == "plan":
-                status_text.append("[PLAN MODE]  ", style="bold #e4e4e7")
-            count = len(self.app.sessions)
-            if count > 0:
-                status_text.append(f"{count} device{'s' if count != 1 else ''} in scope", style="#999999")
+            p_in = self.query_one("#prompt", Input)
+            if self.current_mode == "plan":
+                p_in.placeholder = "Ask specialist agent (Plan Mode - read-only)... (/build to exit)"
             else:
-                status_text.append("no devices connected", style="#777777")
-
-            # Context window usage (like Claude Code: e.g. 1.2k / 200k tokens (1%))
-            max_tokens = get_model_context_window(prov)
-            active_sess = self.active_chat_session
-            used_tokens = 0
-            if active_sess:
-                used_tokens = active_sess.tokens_in + active_sess.tokens_out
-            if used_tokens == 0:
-                used_tokens = self.tokens_in + self.tokens_out
-            if used_tokens == 0:
-                msgs = self.chat_messages.get(self.active_session_id or "", [])
-                chars = sum(len(m.markdown) if hasattr(m, "markdown") else len(m.text) if hasattr(m, "text") else 0 for m in msgs)
-                if chars > 0:
-                    used_tokens = chars // 4
-
-            used_fmt = format_token_count(used_tokens)
-            max_fmt = format_token_count(max_tokens)
-            pct = (used_tokens / max_tokens) * 100 if max_tokens > 0 else 0
-            if used_tokens == 0:
-                pct_str = "0%"
-            elif pct < 1:
-                pct_str = f"{pct:.1f}%" if pct >= 0.1 else "<1%"
-            else:
-                pct_str = f"{int(round(pct))}%"
-
-            # Dynamic color coding: normal (<70%), warning (70-90%), critical (>90%)
-            if pct >= 90:
-                token_style = "bold #f87171"
-            elif pct >= 70:
-                token_style = "bold #d4d4d8"
-            else:
-                token_style = "dim #888888"
-
-            status_text.append("  ·  ", style="dim #444444")
-            status_text.append(f"{used_fmt} / {max_fmt} tokens ({pct_str})", style=token_style)
-
-            self.query_one("#composer-status", Static).update(status_text)
-            try:
-                p_in = self.query_one("#prompt", Input)
-                if self.current_mode == "plan":
-                    p_in.placeholder = "Ask specialist agent (Plan Mode - read-only)... (/build to exit)"
-                else:
-                    p_in.placeholder = "Ask anything, edit config, debug the network... (/ for commands)"
-            except Exception:
-                pass
+                p_in.placeholder = "Ask anything, edit config, debug the network... (/ for commands)"
         except Exception:
             pass
 
@@ -1143,6 +1123,61 @@ class WorkspaceScreen(Screen):
         except Exception:
             pass
 
+    def _update_composer_status(self) -> None:
+        """Update only the composer status line (safe to call on spinner ticks)."""
+        try:
+            app = self.app
+            prov = app.provider  # type: ignore[attr-defined]
+            status_text = Text()
+            if self._busy:
+                frame = self.SPINNER_FRAMES[self._spinner_idx]
+                status_text.append(f"{frame} ", style="bold #38bdf8")
+                status_text.append("Thinking & executing...  ", style="bold #e0e0e0")
+            elif self.current_mode == "plan":
+                status_text.append("[PLAN MODE]  ", style="bold #e4e4e7")
+            count = len(self.app.sessions)
+            if count > 0:
+                status_text.append(f"{count} device{'s' if count != 1 else ''} in scope", style="#999999")
+            else:
+                status_text.append("no devices connected", style="#777777")
+
+            max_tokens = get_model_context_window(prov)
+            active_sess = self.active_chat_session
+            used_tokens = 0
+            if active_sess:
+                used_tokens = active_sess.tokens_in + active_sess.tokens_out
+            if used_tokens == 0:
+                used_tokens = self.tokens_in + self.tokens_out
+            if used_tokens == 0:
+                msgs = self.chat_messages.get(self.active_session_id or "", [])
+                chars = sum(len(m.markdown) if hasattr(m, "markdown") else len(m.text) if hasattr(m, "text") else 0 for m in msgs)
+                if chars > 0:
+                    used_tokens = chars // 4
+
+            used_fmt = format_token_count(used_tokens)
+            max_fmt = format_token_count(max_tokens)
+            pct = (used_tokens / max_tokens) * 100 if max_tokens > 0 else 0
+            if used_tokens == 0:
+                pct_str = "0%"
+            elif pct < 1:
+                pct_str = f"{pct:.1f}%" if pct >= 0.1 else "<1%"
+            else:
+                pct_str = f"{int(round(pct))}%"
+
+            if pct >= 90:
+                token_style = "bold #f87171"
+            elif pct >= 70:
+                token_style = "bold #d4d4d8"
+            else:
+                token_style = "dim #888888"
+
+            status_text.append("  ·  ", style="dim #444444")
+            status_text.append(f"{used_fmt} / {max_fmt} tokens ({pct_str})", style=token_style)
+
+            self.query_one("#composer-status", Static).update(status_text)
+        except Exception:
+            pass
+
     # ---- console ----
     def _start_pump(self, s: DeviceSession) -> None:
         self.buffers.setdefault(s.id, [])
@@ -1154,6 +1189,8 @@ class WorkspaceScreen(Screen):
             if not t.plain and not chunk.text:
                 continue
             self.buffers[s.id].append(t)
+            if len(self.buffers[s.id]) > 5000:
+                self.buffers[s.id] = self.buffers[s.id][-4000:]
 
             # Auto-detect dynamic hostname from streaming console output
             detected = extract_hostname(chunk.text)
@@ -1468,7 +1505,7 @@ class WorkspaceScreen(Screen):
             except Exception:
                 pass
         elif self._busy:
-            self.update_bars()
+            self._update_composer_status()
 
     def action_interrupt_agent(self) -> None:
         """Interrupt active agent execution immediately via Escape key."""
@@ -2341,8 +2378,8 @@ class WorkspaceScreen(Screen):
 
     def action_compact(self) -> None:
         if self._busy:
-            self.notify("Agent is currently busy. Queueing /init command...", severity="information")
-            self._prompt_queue.append(QueuedPrompt(display_text="/init", expanded_text="/init", is_command=True))
+            self.notify("Agent is currently busy. Queueing /compact command...", severity="information")
+            self._prompt_queue.append(QueuedPrompt(display_text="/compact", expanded_text="/compact", is_command=True))
             self._update_queue_ui()
             return
         prov = self.app.provider  # type: ignore[attr-defined]

@@ -236,104 +236,111 @@ class Backend(ABC):
 # 4. HARDWARE SERIAL & SSH SESSIONS
 # =============================================================================
 
-class RealSerialSession:
-    """Manages an active serial port connection with background reading and command queuing."""
-    def __init__(self, session_id: str, profile: DeviceProfile, loop: asyncio.AbstractEventLoop, chunk_queue: asyncio.Queue[ConsoleChunk]):
+class _BaseShellSession:
+    """Shared background-reader and command-execution logic for Serial and SSH sessions."""
+
+    _ERROR_MARKERS = (
+        "% Invalid input",
+        "% Incomplete command",
+        "% Ambiguous command",
+        "% Privilege denied",
+    )
+
+    def __init__(
+        self,
+        session_id: str,
+        profile: DeviceProfile,
+        loop: asyncio.AbstractEventLoop,
+        chunk_queue: asyncio.Queue[Optional[ConsoleChunk]],
+        default_prompt_suffix: str = ">",
+    ) -> None:
         self.session_id = session_id
         self.profile = profile
         self.loop = loop
         self.chunk_queue = chunk_queue
-        self.ser: Optional[serial.Serial] = None
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
-        self.active_prompt = profile.name + ">"
+        self.active_prompt = profile.name + default_prompt_suffix
         self.hostname = profile.name
         self.vendor = profile.vendor
 
         self._cmd_lock = asyncio.Lock()
         self._cmd_active = False
         self._cmd_buf: list[str] = []
+        self._cmd_expected_echo: list[str] = []
         self._cmd_event: Optional[asyncio.Event] = None
 
-    def start(self, ser: serial.Serial, initial_prompt: str = ""):
-        self.ser = ser
-        if initial_prompt:
-            self.active_prompt = initial_prompt
-            h = extract_hostname(initial_prompt)
-            if h:
-                self.hostname = h
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"serial-{self.session_id}")
-        self.thread.start()
+    def _handle_wire_text(self, text: str) -> None:
+        """Process decoded wire text, stream to UI, and detect command completion."""
+        try:
+            self.loop.call_soon_threadsafe(
+                self.chunk_queue.put_nowait,
+                ConsoleChunk(self.session_id, text, "device"),
+            )
+        except RuntimeError:
+            pass
 
-    def _reader_loop(self):
-        while not self.stop_event.is_set():
-            try:
-                if not self.ser or not self.ser.is_open:
-                    break
-                n = self.ser.in_waiting
-                raw = self.ser.read(n if n > 0 else 1)
-                if not raw:
-                    continue
-                text = raw.decode("utf-8", errors="replace")
-
-                # Forward to UI console stream
-                self.loop.call_soon_threadsafe(
-                    self.chunk_queue.put_nowait,
-                    ConsoleChunk(self.session_id, text, "device")
-                )
-
-                # Keep hostname fresh from wire text
-                h = extract_hostname(text)
+        with self.lock:
+            p = extract_prompt(text)
+            if p:
+                h = extract_hostname(p)
                 if h:
                     self.hostname = h
 
-                with self.lock:
-                    if self._cmd_active:
-                        self._cmd_buf.append(text)
-                        # Auto-paginate --More-- so commands complete
-                        if "--More--" in text or "--more--" in text:
-                            try:
-                                self.ser.write(b" ")
-                            except Exception:
-                                pass
-                        full = "".join(self._cmd_buf)
-                        lines = [l.strip() for l in full.replace("\r\n", "\n").split("\n") if l.strip()]
-                        if lines:
-                            last = lines[-1]
-                            if (last.endswith(">") or last.endswith("#") or last.endswith("$")) and len(lines) > 1:
-                                self.active_prompt = last
-                                if self._cmd_event and not self._cmd_event.is_set():
-                                    self.loop.call_soon_threadsafe(self._cmd_event.set)
-            except Exception:
-                if self.stop_event.is_set():
-                    break
-                time.sleep(0.04)
+            if not self._cmd_active:
+                return
 
-    def _write_bytes(self, data: bytes):
-        with self.lock:
-            if self.ser and self.ser.is_open:
-                self.ser.write(data)
-                self.ser.flush()
+            self._cmd_buf.append(text)
+            if "--More--" in text or "--more--" in text:
+                self._send_pagination_space()
+
+            full = "".join(self._cmd_buf)
+            # Only consider a prompt complete if the chunk does not end with a newline
+            # (a live CLI prompt sits at the end of the line waiting for input).
+            if full.endswith("\n"):
+                return
+            lines = [ln.strip() for ln in full.replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()]
+            if not lines:
+                return
+            last = lines[-1]
+            # Wait for at least one line beyond echoed command(s) unless no echo is expected
+            if self._cmd_expected_echo and len(lines) <= 1 and last == self._cmd_expected_echo[0]:
+                return
+            if extract_prompt(last):
+                self.active_prompt = last
+                if self._cmd_event and not self._cmd_event.is_set():
+                    try:
+                        self.loop.call_soon_threadsafe(self._cmd_event.set)
+                    except RuntimeError:
+                        pass
+
+    def _send_pagination_space(self) -> None:
+        pass
+
+    def _write_bytes(self, data: bytes) -> None:
+        raise NotImplementedError
+
+    def _encode_command(self, wire_cmd: str) -> bytes:
+        return wire_cmd.encode("utf-8", errors="replace")
 
     async def run_command(self, command: str, source: str = "user", timeout_s: float = 30.0) -> CommandResult:
         async with self._cmd_lock:
             start_t = time.time()
             self._cmd_event = asyncio.Event()
-            with self.lock:
-                self._cmd_buf = []
-                self._cmd_active = True
-
-            # Support agents sending \r, \n, or \r\n (strip trailing, normalize line endings to wire \r\n)
             norm_cmd = (command or "").replace("\r\n", "\n").replace("\r", "\n")
             if not norm_cmd.strip():
-                clean_lines = []
+                clean_lines: list[str] = []
                 cmd_bytes = b"\r\n"
             else:
-                clean_lines = [l.strip() for l in norm_cmd.split("\n") if l.strip()]
+                clean_lines = [ln.strip() for ln in norm_cmd.split("\n") if ln.strip()]
                 wire_cmd = "\r\n".join(clean_lines) + "\r\n"
-                cmd_bytes = wire_cmd.encode("ascii", errors="replace")
+                cmd_bytes = self._encode_command(wire_cmd)
+
+            with self.lock:
+                self._cmd_buf = []
+                self._cmd_expected_echo = clean_lines
+                self._cmd_active = True
 
             await asyncio.to_thread(self._write_bytes, cmd_bytes)
 
@@ -344,12 +351,11 @@ class RealSerialSession:
             finally:
                 with self.lock:
                     self._cmd_active = False
+                    self._cmd_expected_echo = []
                     raw_out = "".join(self._cmd_buf)
                     self._cmd_buf = []
 
             dur_ms = int((time.time() - start_t) * 1000)
-
-            # Strip command echo at top and prompt at bottom
             lines = raw_out.replace("\r\n", "\n").replace("\r", "\n").split("\n")
             while lines and not lines[0].strip():
                 lines.pop(0)
@@ -358,35 +364,100 @@ class RealSerialSession:
                     lines.pop(0)
             while lines and not lines[-1].strip():
                 lines.pop()
-            while lines and (lines[-1].strip().endswith(">") or lines[-1].strip().endswith("#") or lines[-1].strip().endswith("$")):
+            while lines and extract_prompt(lines[-1].strip()):
                 self.active_prompt = lines[-1].strip()
                 lines.pop()
                 while lines and not lines[-1].strip():
                     lines.pop()
 
             clean_out = "\n".join(lines).strip()
-            ok = not any(err in clean_out for err in ("% Invalid input", "% Incomplete command", "% Ambiguous command", "% Privilege denied"))
+            ok = not any(err in clean_out for err in self._ERROR_MARKERS)
             return CommandResult(output=clean_out, prompt=self.active_prompt, duration_ms=dur_ms, ok=ok)
 
-    def send_control(self, action: str):
+    def send_control(self, action: str) -> None:
         if action == "cr":
             self._write_bytes(b"\r\n")
         elif action == "ctrl_c":
             self._write_bytes(b"\x03")
-            self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "^C\r\n", "user"))
+            try:
+                self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "^C\r\n", "user"))
+            except RuntimeError:
+                pass
         elif action == "ctrl_z":
             self._write_bytes(b"\x1a")
-            self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "^Z\r\n", "user"))
+            try:
+                self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "^Z\r\n", "user"))
+            except RuntimeError:
+                pass
         elif action == "break":
-            with self.lock:
-                if self.ser and self.ser.is_open:
-                    try:
-                        self.ser.send_break()
-                    except Exception:
-                        pass
-            self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "\r\n*** BREAK sent ***\r\n", "user"))
+            self._send_break()
 
-    def close(self):
+    def _send_break(self) -> None:
+        pass
+
+
+class RealSerialSession(_BaseShellSession):
+    """Manages an active serial port connection with background reading and command queuing."""
+
+    def __init__(self, session_id: str, profile: DeviceProfile, loop: asyncio.AbstractEventLoop, chunk_queue: asyncio.Queue[Optional[ConsoleChunk]]):
+        super().__init__(session_id, profile, loop, chunk_queue, default_prompt_suffix=">")
+        self.ser: Optional[serial.Serial] = None
+
+    def start(self, ser: serial.Serial, initial_prompt: str = "") -> None:
+        self.ser = ser
+        if initial_prompt:
+            self.active_prompt = initial_prompt
+            h = extract_hostname(initial_prompt)
+            if h:
+                self.hostname = h
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"serial-{self.session_id}")
+        self.thread.start()
+
+    def _reader_loop(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                if not self.ser or not self.ser.is_open:
+                    break
+                n = self.ser.in_waiting
+                raw = self.ser.read(n if n > 0 else 1)
+                if not raw:
+                    continue
+                self._handle_wire_text(raw.decode("utf-8", errors="replace"))
+            except Exception:
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.04)
+
+    def _send_pagination_space(self) -> None:
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.write(b" ")
+            except Exception:
+                pass
+
+    def _write_bytes(self, data: bytes) -> None:
+        with self.lock:
+            if self.ser and self.ser.is_open:
+                self.ser.write(data)
+                self.ser.flush()
+
+    def _encode_command(self, wire_cmd: str) -> bytes:
+        return wire_cmd.encode("ascii", errors="replace")
+
+    def _send_break(self) -> None:
+        with self.lock:
+            if self.ser and self.ser.is_open:
+                try:
+                    self.ser.send_break()
+                except Exception:
+                    pass
+        try:
+            self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "\r\n*** BREAK sent ***\r\n", "user"))
+        except RuntimeError:
+            pass
+
+    def close(self) -> None:
         self.stop_event.set()
         with self.lock:
             if self.ser and self.ser.is_open:
@@ -396,28 +467,15 @@ class RealSerialSession:
                     pass
 
 
-class RealSSHSession:
+class RealSSHSession(_BaseShellSession):
     """Manages an active SSH session with background shell reading and command queuing."""
-    def __init__(self, session_id: str, profile: DeviceProfile, loop: asyncio.AbstractEventLoop, chunk_queue: asyncio.Queue[ConsoleChunk]):
-        self.session_id = session_id
-        self.profile = profile
-        self.loop = loop
-        self.chunk_queue = chunk_queue
+
+    def __init__(self, session_id: str, profile: DeviceProfile, loop: asyncio.AbstractEventLoop, chunk_queue: asyncio.Queue[Optional[ConsoleChunk]]):
+        super().__init__(session_id, profile, loop, chunk_queue, default_prompt_suffix="#")
         self.client: Optional[paramiko.SSHClient] = None
         self.channel = None
-        self.stop_event = threading.Event()
-        self.thread: Optional[threading.Thread] = None
-        self.lock = threading.Lock()
-        self.active_prompt = profile.name + "#"
-        self.hostname = profile.name
-        self.vendor = profile.vendor
 
-        self._cmd_lock = asyncio.Lock()
-        self._cmd_active = False
-        self._cmd_buf: list[str] = []
-        self._cmd_event: Optional[asyncio.Event] = None
-
-    def start(self, client: paramiko.SSHClient, channel, initial_prompt: str = ""):
+    def start(self, client: paramiko.SSHClient, channel, initial_prompt: str = "") -> None:
         self.client = client
         self.channel = channel
         if initial_prompt:
@@ -429,7 +487,7 @@ class RealSSHSession:
         self.thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"ssh-{self.session_id}")
         self.thread.start()
 
-    def _reader_loop(self):
+    def _reader_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
                 if not self.channel or self.channel.closed:
@@ -438,31 +496,7 @@ class RealSSHSession:
                     raw = self.channel.recv(4096)
                     if not raw:
                         break
-                    text = raw.decode("utf-8", errors="replace")
-                    self.loop.call_soon_threadsafe(
-                        self.chunk_queue.put_nowait,
-                        ConsoleChunk(self.session_id, text, "device")
-                    )
-                    h = extract_hostname(text)
-                    if h:
-                        self.hostname = h
-
-                    with self.lock:
-                        if self._cmd_active:
-                            self._cmd_buf.append(text)
-                            if "--More--" in text or "--more--" in text:
-                                try:
-                                    self.channel.send(" ")
-                                except Exception:
-                                    pass
-                            full = "".join(self._cmd_buf)
-                            lines = [l.strip() for l in full.replace("\r\n", "\n").split("\n") if l.strip()]
-                            if lines:
-                                last = lines[-1]
-                                if (last.endswith(">") or last.endswith("#") or last.endswith("$")) and len(lines) > 1:
-                                    self.active_prompt = last
-                                    if self._cmd_event and not self._cmd_event.is_set():
-                                        self.loop.call_soon_threadsafe(self._cmd_event.set)
+                    self._handle_wire_text(raw.decode("utf-8", errors="replace"))
                 else:
                     time.sleep(0.04)
             except Exception:
@@ -470,73 +504,25 @@ class RealSSHSession:
                     break
                 time.sleep(0.05)
 
-    def _write_bytes(self, data: bytes):
+    def _send_pagination_space(self) -> None:
+        if self.channel and not self.channel.closed:
+            try:
+                self.channel.send(" ")
+            except Exception:
+                pass
+
+    def _write_bytes(self, data: bytes) -> None:
         with self.lock:
             if self.channel and not self.channel.closed:
                 self.channel.send(data)
 
-    async def run_command(self, command: str, source: str = "user", timeout_s: float = 30.0) -> CommandResult:
-        async with self._cmd_lock:
-            start_t = time.time()
-            self._cmd_event = asyncio.Event()
-            with self.lock:
-                self._cmd_buf = []
-                self._cmd_active = True
-
-            # Support agents sending \r, \n, or \r\n (strip trailing, normalize line endings to wire \r\n)
-            norm_cmd = (command or "").replace("\r\n", "\n").replace("\r", "\n")
-            if not norm_cmd.strip():
-                clean_lines = []
-                cmd_bytes = b"\r\n"
-            else:
-                clean_lines = [l.strip() for l in norm_cmd.split("\n") if l.strip()]
-                wire_cmd = "\r\n".join(clean_lines) + "\r\n"
-                cmd_bytes = wire_cmd.encode("utf-8", errors="replace")
-
-            await asyncio.to_thread(self._write_bytes, cmd_bytes)
-
-            try:
-                await asyncio.wait_for(self._cmd_event.wait(), timeout=timeout_s)
-            except asyncio.TimeoutError:
-                pass
-            finally:
-                with self.lock:
-                    self._cmd_active = False
-                    raw_out = "".join(self._cmd_buf)
-                    self._cmd_buf = []
-
-            dur_ms = int((time.time() - start_t) * 1000)
-            lines = raw_out.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            while lines and not lines[0].strip():
-                lines.pop(0)
-            for cl in clean_lines:
-                if lines and lines[0].strip() == cl:
-                    lines.pop(0)
-            while lines and not lines[-1].strip():
-                lines.pop()
-            while lines and (lines[-1].strip().endswith(">") or lines[-1].strip().endswith("#") or lines[-1].strip().endswith("$")):
-                self.active_prompt = lines[-1].strip()
-                lines.pop()
-                while lines and not lines[-1].strip():
-                    lines.pop()
-
-            clean_out = "\n".join(lines).strip()
-            ok = not any(err in clean_out for err in ("% Invalid input", "% Incomplete command", "% Ambiguous command", "% Privilege denied"))
-            return CommandResult(output=clean_out, prompt=self.active_prompt, duration_ms=dur_ms, ok=ok)
-
-    def send_control(self, action: str):
-        if action == "cr":
-            self._write_bytes(b"\r\n")
-        elif action == "ctrl_c":
-            self._write_bytes(b"\x03")
-            self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "^C\r\n", "user"))
-        elif action == "ctrl_z":
-            self._write_bytes(b"\x1a")
-            self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "^Z\r\n", "user"))
-        elif action == "break":
+    def _send_break(self) -> None:
+        try:
             self.loop.call_soon_threadsafe(self.chunk_queue.put_nowait, ConsoleChunk(self.session_id, "\r\n*** BREAK not supported over SSH ***\r\n", "user"))
+        except RuntimeError:
+            pass
 
-    def close(self):
+    def close(self) -> None:
         self.stop_event.set()
         with self.lock:
             if self.channel:
@@ -811,6 +797,8 @@ class RealBackend(Backend):
         if profile.transport is Transport.SERIAL:
             if not profile.serial:
                 raise ValueError("Profile missing serial settings")
+            if serial is None:
+                raise RuntimeError("pyserial is not installed for Serial")
             port = profile.serial.port
             baud = profile.serial.baud or 115200
 
@@ -837,11 +825,12 @@ class RealBackend(Backend):
 
             ser, init_resp = await asyncio.to_thread(_open_serial_sync)
 
-            # Determine initial prompt, hostname, vendor
-            probe_res = await self.probe_device(port, baud=baud, transport=Transport.SERIAL)
-            hostname = probe_res.hostname if probe_res.ok else (extract_hostname(init_resp) or profile.name)
-            prompt = probe_res.prompt if probe_res.ok else (extract_prompt(init_resp) or f"{hostname}>")
-            vendor = probe_res.vendor if probe_res.ok else profile.vendor
+            # Determine initial prompt, hostname, vendor directly from opened serial handle (no double-open)
+            hostname = extract_hostname(init_resp) or profile.name or port
+            prompt = extract_prompt(init_resp) or f"{hostname}>"
+            vendor = detect_vendor_from_text(init_resp) if init_resp else profile.vendor
+            if vendor == Vendor.AUTO and profile.vendor != Vendor.AUTO:
+                vendor = profile.vendor
 
             # Update profile name
             if not profile.name or profile.name == port:
@@ -851,8 +840,10 @@ class RealBackend(Backend):
             driver.start(ser, prompt)
             self._serial_drivers[session_id] = driver
 
-            # Disable pagination on Cisco/network gear
-            await driver.run_command("terminal length 0")
+            # Disable pagination per vendor if enabled
+            paging_cmd = self._disable_paging_cmd(vendor)
+            if paging_cmd and getattr(self._settings, "disable_paging", True):
+                await driver.run_command(paging_cmd)
 
             mode = "privileged" if prompt.endswith("#") else "exec"
             session = DeviceSession(
@@ -882,12 +873,24 @@ class RealBackend(Backend):
 
             def _open_ssh_sync():
                 client = paramiko.SSHClient()
-                policy_map = {
-                    "ask": paramiko.AutoAddPolicy(),
-                    "tofu": paramiko.AutoAddPolicy(),
-                    "strict": paramiko.RejectPolicy(),
-                }
-                client.set_missing_host_key_policy(policy_map.get(profile.ssh.host_key_policy, paramiko.AutoAddPolicy()))
+                known_hosts = self._data_dir / "known_hosts"
+                if known_hosts.is_file():
+                    try:
+                        client.load_host_keys(str(known_hosts))
+                    except Exception as exc:
+                        logger.debug("Failed loading known_hosts: %s", exc)
+                else:
+                    try:
+                        client.load_system_host_keys()
+                    except Exception:
+                        pass
+
+                policy_name = profile.ssh.host_key_policy
+                if policy_name == "strict":
+                    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+                else:
+                    # TOFU / ask: accept new key and persist it to ~/.rackhand/known_hosts
+                    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
                 key_file = profile.ssh.key_path if (profile.ssh.auth == "key" and profile.ssh.key_path) else None
                 client.connect(
@@ -900,6 +903,12 @@ class RealBackend(Backend):
                     timeout=10.0,
                     look_for_keys=(profile.ssh.auth == "agent"),
                 )
+                if policy_name in ("tofu", "ask"):
+                    try:
+                        known_hosts.parent.mkdir(parents=True, exist_ok=True)
+                        client.save_host_keys(str(known_hosts))
+                    except Exception as exc:
+                        logger.debug("Failed saving known_hosts: %s", exc)
                 channel = client.invoke_shell(term="vt100", width=120, height=40)
                 channel.send("\r\n\r\n")
                 time.sleep(0.4)
@@ -918,7 +927,9 @@ class RealBackend(Backend):
             driver.start(client, channel, prompt)
             self._ssh_drivers[session_id] = driver
 
-            await driver.run_command("terminal length 0")
+            paging_cmd = self._disable_paging_cmd(vendor)
+            if paging_cmd and getattr(self._settings, "disable_paging", True):
+                await driver.run_command(paging_cmd)
 
             mode = "privileged" if prompt.endswith("#") else "exec"
             session = DeviceSession(
@@ -939,6 +950,16 @@ class RealBackend(Backend):
             chunk_queue.put_nowait(ConsoleChunk(session_id, banner + prompt + " ", "device"))
             return session
 
+    @staticmethod
+    def _disable_paging_cmd(vendor: Vendor) -> Optional[str]:
+        if vendor == Vendor.CISCO_ASA:
+            return "terminal pager 0"
+        if vendor == Vendor.JUNIPER_JUNOS:
+            return "set cli screen-length 0"
+        if vendor in (Vendor.LINUX, Vendor.VYOS, Vendor.FORTIOS):
+            return None
+        return "terminal length 0"
+
     async def disconnect(self, session_id: str) -> None:
         ser_drv = self._serial_drivers.pop(session_id, None)
         if ser_drv:
@@ -949,21 +970,32 @@ class RealBackend(Backend):
             ssh_drv.close()
 
         self._active_sessions.pop(session_id, None)
-        self._queues.pop(session_id, None)
+        q = self._queues.pop(session_id, None)
+        if q is not None:
+            try:
+                q.put_nowait(None)
+            except Exception:
+                pass
 
     async def console_stream(self, session_id: str) -> AsyncIterator[ConsoleChunk]:
         q = self._queues.get(session_id)
-        while q is not None:
-            yield await q.get()
+        if q is None:
+            return
+        while True:
+            chunk = await q.get()
+            if chunk is None:
+                break
+            yield chunk
 
     async def run_command(self, session_id: str, command: str, source: str = "user") -> CommandResult:
+        timeout_s = float(getattr(self._settings, "command_timeout_s", 30) or 30)
         ser_drv = self._serial_drivers.get(session_id)
         if ser_drv:
-            return await ser_drv.run_command(command, source=source)
+            return await ser_drv.run_command(command, source=source, timeout_s=timeout_s)
 
         ssh_drv = self._ssh_drivers.get(session_id)
         if ssh_drv:
-            return await ssh_drv.run_command(command, source=source)
+            return await ssh_drv.run_command(command, source=source, timeout_s=timeout_s)
 
         return CommandResult("Device session disconnected.", "", 0, False)
 
@@ -986,9 +1018,13 @@ class RealBackend(Backend):
                 for k, v in pdata.items():
                     self.vault.set_provider(k, v)
                 return
+            # Never persist plaintext API keys when an encrypted vault is initialized
+            if hasattr(self, "vault") and self.vault and self.vault.is_vault_initialized():
+                logger.warning("Skipping plaintext providers.json write while encrypted vault is locked.")
+                return
             self._providers_file.write_text(json.dumps(pdata, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed saving provider configs: %s", exc)
 
     async def load_provider_configs(self) -> dict[str, ProviderConfig]:
         if hasattr(self, "vault") and self.vault and self.vault.is_unlocked():
@@ -1041,7 +1077,7 @@ class RealBackend(Backend):
             except Exception as e:
                 return TestResult(False, f"Failed to invoke AGY CLI: {e}", 0, False)
 
-        if (cfg.base_url or cfg.scheme == ApiScheme.ANTHROPIC) and cfg.api_key and "local" not in (cfg.base_url or ""):
+        if cfg.base_url and (cfg.api_key or cfg.auth is AuthStyle.NONE or "localhost" in cfg.base_url or "127.0.0.1" in cfg.base_url):
             start_t = time.time()
             try:
                 import httpx
@@ -1049,7 +1085,8 @@ class RealBackend(Backend):
                 endpoint, headers, payload, is_anthropic = build_llm_request(
                     cfg, [{"role": "user", "content": "hi"}], tools=[], max_tokens=5
                 )
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                verify_arg: Any = cfg.ca_bundle if (cfg.verify_tls and cfg.ca_bundle) else cfg.verify_tls
+                async with httpx.AsyncClient(timeout=min(float(cfg.timeout_s or 10.0), 15.0), verify=verify_arg) as client:
                     resp = await client.post(endpoint, headers=headers, json=payload)
                     dur_ms = int((time.time() - start_t) * 1000)
                     if resp.status_code == 200:
@@ -1125,11 +1162,33 @@ class RealBackend(Backend):
 
         if cfg.base_url and (cfg.api_key or "localhost" in cfg.base_url or "127.0.0.1" in cfg.base_url):
             try:
-                models = await _query_native_endpoint_models(cfg)
-                if models:
-                    return models
-            except Exception:
-                pass
+                import httpx
+                base = cfg.base_url.rstrip("/")
+                models_url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+                headers = dict(cfg.headers)
+                if cfg.api_key:
+                    if cfg.scheme == ApiScheme.ANTHROPIC:
+                        headers["x-api-key"] = cfg.api_key
+                        headers.setdefault("anthropic-version", "2023-06-01")
+                    elif cfg.auth == AuthStyle.X_API_KEY:
+                        headers["x-api-key"] = cfg.api_key
+                    elif cfg.auth == AuthStyle.API_KEY_HEADER:
+                        headers["api-key"] = cfg.api_key
+                    elif cfg.auth == AuthStyle.CUSTOM_HEADER:
+                        headers[cfg.auth_header_name] = cfg.api_key
+                    elif cfg.auth == AuthStyle.BEARER:
+                        headers["Authorization"] = f"Bearer {cfg.api_key}"
+                verify_arg: Any = cfg.ca_bundle if (cfg.verify_tls and cfg.ca_bundle) else cfg.verify_tls
+                async with httpx.AsyncClient(timeout=10.0, verify=verify_arg) as client:
+                    resp = await client.get(models_url, headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        items = data.get("data") or data.get("models") or []
+                        models = [m.get("id") or m.get("name") for m in items if isinstance(m, dict) and (m.get("id") or m.get("name"))]
+                        if models:
+                            return models
+            except Exception as exc:
+                logger.debug("Endpoint model listing failed for %s: %s", cfg.key, exc)
         prov_key = cfg.spec_id or cfg.key
         from models import PROVIDER_MODELS
         if prov_key in PROVIDER_MODELS:

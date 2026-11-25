@@ -175,5 +175,6 @@ class SettingsModal(ModalScreen[Optional[Settings]]):
             max_agent_steps=_int(q("#s-steps", Input).value, 25),
             command_timeout_s=_int(q("#s-timeout", Input).value, 30),
             disable_paging=q("#s-paging", Checkbox).value,
+            reasoning_effort=getattr(self.s, "reasoning_effort", "medium"),
             theme=self.s.theme,
         ))

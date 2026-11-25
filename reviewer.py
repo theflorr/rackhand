@@ -60,12 +60,12 @@ Decision Guidelines:
 Always generate the exact rollback commands to undo the proposed changes.
 
 Respond ONLY with valid JSON in this exact structure:
-{
+{{
   "decision": "auto_approve" | "ask_approval",
   "risk": "config" | "danger",
   "reason": "1-2 sentence concise explanation of why it can be auto-approved or why human review is required",
   "rollback": ["command 1", "command 2"]
-}
+}}
 """
 
 
@@ -95,12 +95,12 @@ Guidelines:
 Always generate the exact rollback commands if applicable.
 
 Respond ONLY with valid JSON in this exact structure:
-{
+{{
   "is_dangerous": true | false,
   "risk": "danger" | "config",
   "reason": "1-2 sentence concise explanation of why this is considered dangerous or why it is safe",
   "rollback": ["command 1", "command 2"]
-}
+}}
 """
 
 
@@ -167,7 +167,13 @@ async def fetch_touched_config(
                     if ln.strip() and not ln.strip().startswith("Building configuration")
                 ]
                 if clean_lines:
-                    snippets.append(f"# Current config for [{target}]:\n" + "\n".join(clean_lines[:35]))
+                    snippet_text = "\n".join(clean_lines[:35])
+                    try:
+                        from llm_engine import redact_sensitive_text
+                        snippet_text = redact_sensitive_text(snippet_text)
+                    except Exception:
+                        pass
+                    snippets.append(f"# Current config for [{target}]:\n" + snippet_text)
         except Exception:
             pass
 
@@ -188,6 +194,15 @@ def _parse_reviewer_json(raw: str) -> dict:
         raise
 
 
+def _get_session_platform(session: Any) -> str:
+    if session is None:
+        return "cisco_ios"
+    v = getattr(session, "vendor", None) or getattr(getattr(session, "profile", None), "vendor", None)
+    if v is not None:
+        return v.value if hasattr(v, "value") else str(v)
+    return getattr(session, "platform", None) or "cisco_ios"
+
+
 async def review_change_autonomous(
     change: ProposedChange,
     session: Any,
@@ -197,7 +212,7 @@ async def review_change_autonomous(
 ) -> ReviewVerdict:
     """Spawns a fresh agent to inspect touched config, evaluate commands, and decide auto-approval."""
     hostname = session.hostname if session else change.device or "Device"
-    platform = getattr(session, "platform", "cisco_ios") or "cisco_ios"
+    platform = _get_session_platform(session)
     cmds_str = "\n".join(change.commands)
 
     # 1. Inspect and fetch touched current configuration
@@ -221,6 +236,8 @@ async def review_change_autonomous(
             temperature=0.1,
             max_tokens=600,
         )
+        if not raw_resp:
+            raise ValueError("Empty response from reviewer LLM")
         data = _parse_reviewer_json(raw_resp)
         decision = str(data.get("decision", "ask_approval")).lower().strip()
         risk_str = str(data.get("risk", "config")).lower().strip()
@@ -258,7 +275,7 @@ async def review_danger_only(
 ) -> ReviewVerdict:
     """Spawns a fresh agent specifically checking for catastrophic/dangerous actions."""
     hostname = session.hostname if session else change.device or "Device"
-    platform = getattr(session, "platform", "cisco_ios") or "cisco_ios"
+    platform = _get_session_platform(session)
     cmds_str = "\n".join(change.commands)
 
     prompt = DANGER_EVALUATOR_PROMPT.format(
@@ -276,6 +293,8 @@ async def review_danger_only(
             temperature=0.1,
             max_tokens=500,
         )
+        if not raw_resp:
+            raise ValueError("Empty response from danger gatekeeper LLM")
         data = _parse_reviewer_json(raw_resp)
         is_dang = bool(data.get("is_dangerous", False))
         risk_str = str(data.get("risk", "config" if not is_dang else "danger")).lower().strip()
@@ -292,14 +311,14 @@ async def review_danger_only(
             rollback=rollback,
         )
     except Exception as exc:
-        # Fallback to heuristic check if API fails
-        danger_keywords = ("reload", "reboot", "erase", "format", "write erase", "factory-reset")
+        # Fail-closed on API/parse failure: never auto-approve without a verified danger check
+        danger_keywords = ("reload", "reboot", "erase", "format", "write erase", "factory-reset", "shutdown", "no router")
         has_danger = any(any(kw in cmd.lower() for kw in danger_keywords) for cmd in change.commands)
         risk = Risk.DANGER if has_danger else Risk.CONFIG
         return ReviewVerdict(
-            auto_approve=not has_danger,
+            auto_approve=False,
             is_dangerous=has_danger,
             risk=risk,
-            reason="Danger check fallback heuristic." if not has_danger else f"Destructive command detected ({exc}).",
+            reason=f"Danger gatekeeper unavailable ({exc}); requesting operator approval.",
             rollback=[],
         )

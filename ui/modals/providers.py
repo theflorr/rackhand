@@ -603,6 +603,8 @@ class ProvidersScreen(ModalScreen[Optional[ProviderConfig]]):
         status = self.query_one("#p-result", Static)
         status.update(Text("Testing connection...", style="dim"))
         res: TestResult = await self.app.backend.test_provider(cfg)  # type: ignore[attr-defined]
+        if not self.is_mounted:
+            return
         if res.ok:
             tool_note = "" if res.tools_ok is None else (" - tools supported" if res.tools_ok
                                                          else " - warning: tools not supported")

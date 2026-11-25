@@ -42,7 +42,7 @@ def print_step(step: str, title: str) -> None:
 def check_prerequisites() -> tuple[str, str]:
     cargo_bin = str(Path.home() / ".cargo" / "bin")
     if cargo_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
+        os.environ["PATH"] = f"{cargo_bin}{os.pathsep}{os.environ.get('PATH', '')}"
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")
     if not cargo or not rustc:
@@ -162,11 +162,14 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
             # zip has root folder like 'pyapp-v0.31.0/...'
             root_prefix = z.namelist()[0].split("/")[0] + "/"
+            pyapp_root = pyapp_dir.resolve()
             for member in z.infolist():
                 if not member.filename.startswith(root_prefix) or member.is_dir():
                     continue
                 rel_path = member.filename[len(root_prefix):]
-                target_path = pyapp_dir / rel_path
+                target_path = (pyapp_dir / rel_path).resolve()
+                if not target_path.is_relative_to(pyapp_root):
+                    continue
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(member) as src, open(target_path, "wb") as dst:
                     dst.write(src.read())
@@ -202,8 +205,10 @@ def setup_pyapp_source(pyapp_dir: Path, icon_path: Path) -> None:
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winres::WindowsResource::new();
         res.set_icon("rackhand.ico");
-        res.set_windres_path("x86_64-w64-mingw32-windres");
-        res.set_ar_path("x86_64-w64-mingw32-ar");
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+            res.set_windres_path("x86_64-w64-mingw32-windres");
+            res.set_ar_path("x86_64-w64-mingw32-ar");
+        }
         if let Err(e) = res.compile() {
             eprintln!("Failed to compile Windows resource: {:?}", e);
         }

@@ -169,13 +169,12 @@ class ContextMemoryManager:
         system_msg = msgs[0] if msgs and msgs[0].get("role") == "system" else None
         remaining = msgs[1:] if system_msg else msgs
 
-        # Keep the most recent max_turns messages
+        # Keep the most recent max_turns messages, without orphaning tool results
         pruned = remaining[-self.max_turns:]
-
-        # Ensure we never orphan tool result messages:
-        # A 'tool' message must be preceded by an assistant message with tool_calls.
         while pruned and pruned[0].get("role") == "tool":
             pruned.pop(0)
+        # If pruning cut right before an assistant message with tool_calls whose tools were kept,
+        # that's fine; if it cut *after* an assistant tool_calls message, the loop above drops orphan tools.
 
         self.sessions[session_id] = ([system_msg] + pruned) if system_msg else pruned
 
@@ -208,6 +207,120 @@ CLAUDE_STYLE_GUIDELINES = """
 """
 
 
+def _to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI function-tool schemas to Anthropic input_schema tools."""
+    out: list[dict[str, Any]] = []
+    for t in tools:
+        if t.get("type") == "function" and isinstance(t.get("function"), dict):
+            fn = t["function"]
+            out.append({
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            })
+        elif "name" in t and "input_schema" in t:
+            out.append(t)
+    return out
+
+
+def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI-style chat messages (including tool_calls/tool) to Anthropic format."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            blocks: list[dict[str, Any]] = []
+            text = (m.get("content") or "").strip()
+            if text:
+                blocks.append({"type": "text", "text": text})
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {})
+                raw_args = fn.get("arguments", "{}")
+                try:
+                    parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    parsed_args = {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:8]}",
+                    "name": fn.get("name", ""),
+                    "input": parsed_args,
+                })
+            out.append({"role": "assistant", "content": blocks})
+        elif role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": m.get("tool_call_id", ""),
+                "content": str(m.get("content") or ""),
+            }
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+        else:
+            out.append({"role": role or "user", "content": m.get("content") or ""})
+    return out if out else [{"role": "user", "content": "hi"}]
+
+
+def _parse_llm_response(response_data: dict[str, Any], is_anthropic: bool) -> tuple[str, list[dict[str, Any]], int, int]:
+    """Parse Anthropic or OpenAI-compatible JSON response into (content, tool_calls, prompt_tokens, completion_tokens)."""
+    usage = response_data.get("usage", {})
+    if is_anthropic:
+        blocks = response_data.get("content") or []
+        text_parts: list[str] = []
+        thinking_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        if isinstance(blocks, list):
+            for blk in blocks:
+                if not isinstance(blk, dict):
+                    continue
+                btype = blk.get("type")
+                if btype == "text":
+                    text_parts.append(blk.get("text", ""))
+                elif btype == "thinking":
+                    thinking_parts.append(blk.get("thinking", ""))
+                elif btype == "tool_use":
+                    tool_calls.append({
+                        "id": blk.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {
+                            "name": blk.get("name", ""),
+                            "arguments": json.dumps(blk.get("input") or {}),
+                        },
+                    })
+        content = "".join(text_parts)
+        thinking = "".join(thinking_parts).strip()
+        if thinking and not content:
+            content = thinking
+        elif thinking and content:
+            content = f"> *Thinking: {thinking}*\n\n{content}"
+        in_toks = int(usage.get("input_tokens", 0) or 0)
+        out_toks = int(usage.get("output_tokens", 0) or 0)
+        return content, tool_calls, in_toks, out_toks
+
+    choice = response_data.get("choices", [{}])[0]
+    msg_obj = choice.get("message", {})
+    content = msg_obj.get("content") or ""
+    reasoning = msg_obj.get("reasoning_content") or ""
+    if reasoning and not content:
+        content = reasoning
+    elif reasoning and content:
+        content = f"> *Thinking: {reasoning.strip()}*\n\n{content}"
+
+    tool_calls = msg_obj.get("tool_calls") or []
+    if not tool_calls and msg_obj.get("function_call"):
+        tool_calls = [{
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": msg_obj["function_call"],
+        }]
+    in_toks = int(usage.get("prompt_tokens", 0) or 0)
+    out_toks = int(usage.get("completion_tokens", 0) or 0)
+    return content, tool_calls, in_toks, out_toks
+
+
 def build_llm_request(
     provider: ProviderConfig,
     messages: list[dict[str, Any]],
@@ -226,6 +339,7 @@ def build_llm_request(
 
     base_url = (provider.base_url or ("https://api.anthropic.com" if is_anthropic else "https://api.openai.com/v1")).rstrip("/")
     api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
+    auth_style = getattr(provider, "auth", AuthStyle.BEARER)
 
     if is_anthropic:
         if not base_url.endswith("/messages") and not base_url.endswith("/v1"):
@@ -235,7 +349,6 @@ def build_llm_request(
         else:
             endpoint = base_url
 
-        auth_style = getattr(provider, "auth", None)
         is_oauth = (
             api_key.startswith("sk-ant-oat")
             or api_key.startswith("ey")
@@ -246,28 +359,32 @@ def build_llm_request(
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        if is_oauth:
-            headers["Authorization"] = f"Bearer {api_key}"
-            headers["anthropic-beta"] = "oauth-2025-04-20"
-            headers["user-agent"] = "claude-code/0.2.29"
-        else:
-            headers["x-api-key"] = api_key
+        headers.update(getattr(provider, "headers", None) or {})
+        if auth_style != AuthStyle.NONE and api_key:
+            if is_oauth:
+                headers["Authorization"] = f"Bearer {api_key}"
+                headers["anthropic-beta"] = "oauth-2025-04-20"
+                headers["user-agent"] = "claude-code/0.2.29"
+            else:
+                headers["x-api-key"] = api_key
         toks = max_tokens if max_tokens is not None else (provider.max_output if provider.max_output and provider.max_output > 0 else 1024)
         model = provider.model or "claude-3-5-sonnet-20241022"
 
-        # Separate system messages for Anthropic
+        # Separate system messages and translate OpenAI tool messages for Anthropic
         system_texts = [m["content"] for m in messages if m.get("role") == "system" and isinstance(m.get("content"), str)]
-        user_msgs = [m for m in messages if m.get("role") != "system"]
+        user_msgs = _to_anthropic_messages(messages)
 
         payload: dict[str, Any] = {
             "model": model,
-            "messages": user_msgs if user_msgs else [{"role": "user", "content": "hi"}],
+            "messages": user_msgs,
             "max_tokens": toks,
         }
         if system_texts:
             payload["system"] = "\n\n".join(system_texts)
         if tools:
-            payload["tools"] = tools
+            payload["tools"] = _to_anthropic_tools(tools)
+        if getattr(provider, "extras", None):
+            payload.update(provider.extras)
         return endpoint, headers, payload, True
 
     # Standard OpenAI / OpenRouter / compatible schemes
@@ -280,15 +397,22 @@ def build_llm_request(
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
     }
+    headers.update(getattr(provider, "headers", None) or {})
+    if auth_style == AuthStyle.X_API_KEY and api_key:
+        headers["x-api-key"] = api_key
+    elif auth_style == AuthStyle.API_KEY_HEADER and api_key:
+        headers["api-key"] = api_key
+    elif auth_style == AuthStyle.CUSTOM_HEADER and api_key:
+        headers[getattr(provider, "auth_header_name", "Authorization")] = api_key
+    elif auth_style != AuthStyle.NONE and api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     if "openrouter" in base_url.lower():
         headers["HTTP-Referer"] = "https://github.com/rackhand"
         headers["X-Title"] = "Rackhand Network Assistant"
 
-    # Select model
     model = provider.model or "meta-llama/llama-3.3-70b-instruct"
-    # Bounded max output tokens to prevent OpenRouter 402 quota rejections
     toks = max_tokens if max_tokens is not None else (provider.max_output if provider.max_output and provider.max_output > 0 else 2048)
 
     use_tools = tools if tools is not None else (NETWORK_TOOLS if getattr(provider, "supports_tools", False) else None)
@@ -308,6 +432,9 @@ def build_llm_request(
             payload["reasoning_effort"] = "high" if effort == "max" else effort
             if "openrouter" in base_url.lower():
                 payload["reasoning"] = {"effort": effort}
+
+    if getattr(provider, "extras", None):
+        payload.update(provider.extras)
 
     # Filter None
     payload = {k: v for k, v in payload.items() if v is not None}
@@ -420,7 +547,8 @@ class RealLLMEngine:
 
         # 3. Check Provider Credentials & Endpoint
         api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
-        if not api_key:
+        is_local = "localhost" in (provider.base_url or "") or "127.0.0.1" in (provider.base_url or "")
+        if not api_key and getattr(provider, "auth", AuthStyle.BEARER) != AuthStyle.NONE and not is_local:
             yield AgentError(
                 f"{badge} {name}: No API key or access token is configured for provider {provider.name}. "
                 f"Press F2 to select a provider with valid credentials (such as OpenRouter or Claude), or scan your local system."
@@ -430,7 +558,7 @@ class RealLLMEngine:
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
-        max_steps = getattr(settings, "max_agent_steps", 10) or 10
+        max_steps = getattr(settings, "max_agent_steps", 25) or 25
 
         # 3. Agent Loop (LLM call -> Tool Execution -> Repeat until done)
         for step in range(max_steps):
@@ -443,7 +571,9 @@ class RealLLMEngine:
 
             # Build Request Payload based on provider scheme
             tools_to_use = PLAN_NETWORK_TOOLS if is_plan_mode else (NETWORK_TOOLS if provider.supports_tools else None)
-            endpoint, headers, payload = self._build_request(provider, current_messages, tools=tools_to_use, settings=settings)
+            endpoint, headers, payload, is_anthropic = build_llm_request(
+                provider, current_messages, tools=tools_to_use, settings=settings
+            )
 
             response_data = None
             try:
@@ -463,29 +593,10 @@ class RealLLMEngine:
                 yield AgentDone(total_prompt_tokens, total_completion_tokens)
                 return
 
-            choice = response_data.get("choices", [{}])[0]
-            msg_obj = choice.get("message", {})
-            content = msg_obj.get("content") or ""
-            # Support reasoning models (DeepSeek, etc.)
-            reasoning = msg_obj.get("reasoning_content") or ""
-            if reasoning and not content:
-                content = reasoning
-            elif reasoning and content:
-                content = f"> *Thinking: {reasoning.strip()}*\n\n{content}"
-
-            tool_calls = msg_obj.get("tool_calls") or []
-            # Normalize legacy function_call format if model used it
-            if not tool_calls and msg_obj.get("function_call"):
-                tool_calls = [{
-                    "id": f"call_{uuid.uuid4().hex[:8]}",
-                    "type": "function",
-                    "function": msg_obj["function_call"]
-                }]
-
-            # Extract token usage
-            usage = response_data.get("usage", {})
-            total_prompt_tokens = usage.get("prompt_tokens", total_prompt_tokens)
-            total_completion_tokens += usage.get("completion_tokens", 0)
+            content, tool_calls, in_toks, out_toks = _parse_llm_response(response_data, is_anthropic)
+            if in_toks:
+                total_prompt_tokens = in_toks
+            total_completion_tokens += out_toks
 
             # Record assistant turn in context memory
             self.memory.add_message(sess_id, "assistant", content, tool_calls=tool_calls if tool_calls else None)
@@ -517,6 +628,7 @@ class RealLLMEngine:
                     if raw_cmd is None and "commands" in args:
                         raw_cmd = args.get("commands")
                     if raw_cmd is None:
+                        self.memory.add_message(sess_id, "tool", "Error: missing 'command' argument.", tool_call_id=call_id)
                         continue
 
                     # Support agents sending \r, \n, or \r\n (trailing, raw enter, or multi-line)
@@ -537,6 +649,7 @@ class RealLLMEngine:
                             cmds_to_run = split_lines if split_lines else []
 
                     if not cmds_to_run:
+                        self.memory.add_message(sess_id, "tool", "Error: empty command.", tool_call_id=call_id)
                         continue
 
                     dev_name = session.hostname if session else "disconnected"
@@ -763,7 +876,16 @@ class RealLLMEngine:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                stdout, stderr = await proc.communicate()
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                yield AgentError(f"{badge} AGY CLI timed out after 120 seconds.")
+                yield AgentDone(total_prompt_tokens, total_completion_tokens)
+                return
             except asyncio.CancelledError:
                 try:
                     proc.kill()
@@ -797,7 +919,7 @@ class RealLLMEngine:
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE
                             )
-                            stdout, stderr = await retry_proc.communicate()
+                            stdout, stderr = await asyncio.wait_for(retry_proc.communicate(), timeout=120.0)
                             proc = retry_proc
                         except asyncio.CancelledError:
                             try:
@@ -1034,8 +1156,7 @@ class RealLLMEngine:
         if status == 403:
             return (
                 f"Access forbidden (403) on {provider.name}: {msg}\n"
-                f"If using Google Antigravity, note that its local OAuth token is scoped for Cloud Platform / AI Studio. "
-                f"Press F2 to select OpenRouter (claude-sonnet-5.5) which is verified active on your system."
+                f"Verify your API key, token scopes, or select another provider in Model settings (F2)."
             )
         if status == 404:
             return f"Model '{provider.model}' was not found on {provider.name} (404). Please select an active model in F2."
@@ -1104,26 +1225,24 @@ class RealLLMEngine:
                 return None
 
         api_key = provider.api_key.strip() if isinstance(provider.api_key, str) else ""
-        if not api_key and "localhost" not in provider.base_url and "127.0.0.1" not in provider.base_url:
+        is_local = "localhost" in (provider.base_url or "") or "127.0.0.1" in (provider.base_url or "")
+        if not api_key and getattr(provider, "auth", AuthStyle.BEARER) != AuthStyle.NONE and not is_local:
             raise ValueError(f"No API key configured for {provider.name}. Configure an API key or switch providers with F2.")
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        endpoint, headers, payload = self._build_request(provider, messages, tools=None)
-        payload["temperature"] = temperature
-        payload["max_tokens"] = max_tokens
+        endpoint, headers, payload, is_anthropic = build_llm_request(
+            provider, messages, tools=None, max_tokens=max_tokens
+        )
+        if not is_anthropic:
+            payload["temperature"] = temperature
         try:
             resp = await self._http_client.post(endpoint, headers=headers, json=payload, timeout=60.0)
             if resp.status_code == 200:
                 data = resp.json()
-                choice = data.get("choices", [{}])[0]
-                msg_obj = choice.get("message", {})
-                content = msg_obj.get("content") or ""
-                reasoning = msg_obj.get("reasoning_content") or ""
-                if not content and reasoning:
-                    content = reasoning
+                content, _, _, _ = _parse_llm_response(data, is_anthropic)
                 return content
             else:
                 err_text = self._format_api_error(resp.status_code, resp.text, provider)

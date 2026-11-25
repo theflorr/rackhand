@@ -567,7 +567,15 @@ class PromptInput(Input):
     def _handle_pasted_image(self, img: Any) -> None:
         self._image_counter += 1
         tag = f"[IMAGE #{self._image_counter}]"
-        sess_id = getattr(getattr(self, "app", None), "active_session_id", None)
+        try:
+            screen_obj = self.screen
+        except Exception:
+            screen_obj = None
+        try:
+            app_obj = self.app
+        except Exception:
+            app_obj = None
+        sess_id = getattr(screen_obj, "active_session_id", None) or getattr(app_obj, "active_session_id", None)
         saved_path = save_clipboard_image(img, session_id=sess_id, index=self._image_counter)
         self._pasted_images[tag] = saved_path
         self._insert_token_or_text(tag)

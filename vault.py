@@ -319,16 +319,28 @@ class Vault:
             full_payload = self._header_bytes + data_nonce + ciphertext
 
             self.base_dir.mkdir(parents=True, exist_ok=True)
+            if os.name != "nt":
+                try:
+                    os.chmod(self.base_dir, 0o700)
+                except OSError:
+                    pass
 
             # Atomic write via temp file then rename with backup
             with open(self.temp_path, "wb") as f:
                 f.write(full_payload)
                 f.flush()
                 os.fsync(f.fileno())
+            if os.name != "nt":
+                try:
+                    os.chmod(self.temp_path, 0o600)
+                except OSError:
+                    pass
 
             if self.path.exists():
                 try:
                     shutil.copy2(self.path, self.backup_path)
+                    if os.name != "nt":
+                        os.chmod(self.backup_path, 0o600)
                 except Exception as exc:
                     logger.debug("Failed creating vault backup: %s", exc)
 
@@ -394,8 +406,13 @@ class Vault:
                 new_wrapped_key,
             )
 
+            old_header_bytes = self._header_bytes
             self._header_bytes = new_header_bytes
-            self.save()
+            try:
+                self.save()
+            except Exception:
+                self._header_bytes = old_header_bytes
+                raise
 
     def wipe(self) -> None:
         """Permanently wipe vault files and clear in-memory keys."""
@@ -688,25 +705,39 @@ class Vault:
             if usage_file.is_file():
                 try:
                     u_data = json.loads(usage_file.read_text(encoding="utf-8"))
-                    entries = u_data.get("entries", [])
+                    if isinstance(u_data, list):
+                        entries = u_data
+                        rate_limits_obj = None
+                        quotas_obj = None
+                    elif isinstance(u_data, dict):
+                        entries = u_data.get("entries", [])
+                        rate_limits_obj = u_data.get("rate_limits")
+                        quotas_obj = u_data.get("api_quotas")
+                    else:
+                        entries = []
+                        rate_limits_obj = None
+                        quotas_obj = None
+
                     for e in entries:
+                        if not isinstance(e, dict):
+                            continue
                         c.execute(
                             "INSERT INTO usage (timestamp, provider_key, model, tokens_in, tokens_out, session_id) "
                             "VALUES (?, ?, ?, ?, ?, ?)",
                             (
-                                e.get("timestamp", time.time()),
-                                e.get("provider_key", ""),
+                                e.get("ts", e.get("timestamp", time.time())),
+                                e.get("prov", e.get("provider_key", "")),
                                 e.get("model", ""),
-                                e.get("tokens_in", 0),
-                                e.get("tokens_out", 0),
-                                e.get("session_id", ""),
+                                e.get("in", e.get("tokens_in", 0)),
+                                e.get("out", e.get("tokens_out", 0)),
+                                e.get("sess", e.get("session_id", "")),
                             ),
                         )
                         result.usage_entries_count += 1
-                    if "rate_limits" in u_data:
-                        c.execute("INSERT OR REPLACE INTO usage_meta (key, data) VALUES (?, ?)", ("rate_limits", json.dumps(u_data["rate_limits"])))
-                    if "api_quotas" in u_data:
-                        c.execute("INSERT OR REPLACE INTO usage_meta (key, data) VALUES (?, ?)", ("api_quotas", json.dumps(u_data["api_quotas"])))
+                    if rate_limits_obj is not None:
+                        c.execute("INSERT OR REPLACE INTO usage_meta (key, data) VALUES (?, ?)", ("rate_limits", json.dumps(rate_limits_obj)))
+                    if quotas_obj is not None:
+                        c.execute("INSERT OR REPLACE INTO usage_meta (key, data) VALUES (?, ?)", ("api_quotas", json.dumps(quotas_obj)))
                     files_to_delete.append(usage_file)
                 except Exception as exc:
                     logger.warning("Migration failed reading usage_history.json: %s", exc)
@@ -750,6 +781,12 @@ class Vault:
                     raise MigrationVerificationError("Sessions count mismatch in verified read-back")
                 if _count("snapshots") != result.snapshots_count:
                     raise MigrationVerificationError("Snapshots count mismatch in verified read-back")
+                if _count("transcripts") != result.transcripts_count:
+                    raise MigrationVerificationError("Transcripts count mismatch in verified read-back")
+                if _count("images") != result.images_count:
+                    raise MigrationVerificationError("Images count mismatch in verified read-back")
+                if _count("usage") != result.usage_entries_count:
+                    raise MigrationVerificationError("Usage count mismatch in verified read-back")
 
                 test_conn.close()
             except Exception as exc:
@@ -768,8 +805,16 @@ class Vault:
             for d in dirs_to_delete:
                 try:
                     if d.is_dir():
-                        shutil.rmtree(d, ignore_errors=True)
-                        deleted_paths.append(str(d))
+                        # Only remove directories that are now empty so unmigrated files are never lost
+                        for sub in sorted(d.rglob("*"), reverse=True):
+                            if sub.is_dir():
+                                try:
+                                    sub.rmdir()
+                                except OSError:
+                                    pass
+                        if not any(d.iterdir()):
+                            d.rmdir()
+                            deleted_paths.append(str(d))
                 except Exception as exc:
                     logger.warning("Failed deleting plaintext dir %s: %s", d, exc)
 
@@ -895,8 +940,16 @@ class Vault:
             row = conn.execute("SELECT ui_messages, mem_messages FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if not row:
                 return [], []
-            ui_m = json.loads(row[0]) if row[0] else []
-            mem_m = json.loads(row[1]) if row[1] else []
+            try:
+                ui_m = json.loads(row[0]) if row[0] else []
+            except Exception as exc:
+                logger.warning("Corrupt ui_messages JSON for session %s: %s", session_id, exc)
+                ui_m = []
+            try:
+                mem_m = json.loads(row[1]) if row[1] else []
+            except Exception as exc:
+                logger.warning("Corrupt mem_messages JSON for session %s: %s", session_id, exc)
+                mem_m = []
             return ui_m, mem_m
 
     def set_session_details(self, session_id: str, sess_dict: dict, ui_msgs: list, mem_msgs: list) -> None:
@@ -968,9 +1021,10 @@ class Vault:
     def get_transcripts(self, session_id: str) -> list[str]:
         with self._sync_lock:
             conn = self._require_unlocked()
+            escaped = session_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             rows = conn.execute(
-                "SELECT entry FROM transcripts WHERE session_id = ? OR session_id LIKE ? ORDER BY id ASC",
-                (session_id, f"%_{session_id}"),
+                "SELECT entry FROM transcripts WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\' ORDER BY id ASC",
+                (session_id, f"%_{escaped}"),
             ).fetchall()
             return [r[0] for r in rows]
 
@@ -998,12 +1052,12 @@ class Vault:
                     "INSERT INTO usage (timestamp, provider_key, model, tokens_in, tokens_out, session_id) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (
-                        e.get("timestamp", time.time()),
-                        e.get("provider_key", ""),
+                        e.get("ts", e.get("timestamp", time.time())),
+                        e.get("prov", e.get("provider_key", "")),
                         e.get("model", ""),
-                        e.get("tokens_in", 0),
-                        e.get("tokens_out", 0),
-                        e.get("session_id", ""),
+                        e.get("in", e.get("tokens_in", 0)),
+                        e.get("out", e.get("tokens_out", 0)),
+                        e.get("sess", e.get("session_id", "")),
                     ),
                 )
             conn.execute("INSERT OR REPLACE INTO usage_meta (key, data) VALUES ('rate_limits', ?)", (json.dumps(rate_limits),))
@@ -1029,8 +1083,16 @@ class Vault:
             ]
             rl_row = conn.execute("SELECT data FROM usage_meta WHERE key = 'rate_limits'").fetchone()
             q_row = conn.execute("SELECT data FROM usage_meta WHERE key = 'api_quotas'").fetchone()
-            rate_limits = json.loads(rl_row[0]) if rl_row and rl_row[0] else {}
-            quotas = json.loads(q_row[0]) if q_row and q_row[0] else {}
+            try:
+                rate_limits = json.loads(rl_row[0]) if rl_row and rl_row[0] else {}
+            except Exception as exc:
+                logger.warning("Corrupt rate_limits JSON in vault: %s", exc)
+                rate_limits = {}
+            try:
+                quotas = json.loads(q_row[0]) if q_row and q_row[0] else {}
+            except Exception as exc:
+                logger.warning("Corrupt api_quotas JSON in vault: %s", exc)
+                quotas = {}
             return entries, rate_limits, quotas
 
 

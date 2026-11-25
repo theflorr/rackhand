@@ -7,6 +7,7 @@ and prompt dispatching for Cisco and Fortinet network operating systems.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -788,16 +789,20 @@ def resolve_agent(agent_id: Optional[str], session: Optional[DeviceSession] = No
 
     resolved: AgentSpec = AGENT_INDEX["auto"]
 
-    # Auto-detection logic based on session
+    # Auto-detection logic based on session (prefer detected session.vendor over profile.vendor)
     if session is not None:
-        vendor_val = session.profile.vendor.value.lower() if hasattr(session.profile.vendor, "value") else str(session.profile.vendor).lower()
+        raw_vendor = getattr(session, "vendor", None)
+        raw_v_str = (raw_vendor.value if hasattr(raw_vendor, "value") else str(raw_vendor or "")).lower()
+        if not raw_vendor or raw_v_str in ("auto", "generic", ""):
+            raw_vendor = session.profile.vendor
+        vendor_val = raw_vendor.value.lower() if hasattr(raw_vendor, "value") else str(raw_vendor).lower()
         hostname = (session.hostname or session.profile.name or "").lower()
 
         # Fortinet hardware family detection
         if "forti" in vendor_val or "forti" in hostname:
             if "fsw" in hostname or "switch" in hostname:
                 resolved = AGENT_INDEX["fortiswitch"]
-            elif "fap" in hostname or "ap" in hostname:
+            elif re.search(r"\bfap|\bap[-_]?\d|\bap\b", hostname):
                 resolved = AGENT_INDEX["fortiap"]
             elif "fmg" in hostname or "manager" in hostname:
                 resolved = AGENT_INDEX["fortimanager"]
@@ -805,11 +810,11 @@ def resolve_agent(agent_id: Optional[str], session: Optional[DeviceSession] = No
                 resolved = AGENT_INDEX["fortigate"]
 
         # Cisco hardware family detection
-        elif "xr" in vendor_val or "xr" in hostname:
+        elif "xr" in vendor_val or re.search(r"\bxr\b|ios-?xr", hostname):
             resolved = AGENT_INDEX["cisco-ios-xr"]
-        elif "nxos" in vendor_val or "nexus" in hostname or "n9k" in hostname:
+        elif "nxos" in vendor_val or "nexus" in hostname or re.search(r"\bn9k\b", hostname):
             resolved = AGENT_INDEX["cisco-nxos"]
-        elif "asa" in vendor_val or "asa" in hostname:
+        elif "asa" in vendor_val or re.search(r"\basa\b|asa\d", hostname):
             resolved = AGENT_INDEX["cisco-asa"]
         elif "ftd" in vendor_val or "firepower" in hostname:
             resolved = AGENT_INDEX["cisco-ftd"]
