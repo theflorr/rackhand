@@ -8,14 +8,6 @@ Rackhand connects autonomous LLM agents directly to the device, either over seri
 
 ---
 
-### Download
-
-Grab the standalone Windows executable from **[GitHub Releases](https://github.com/theflorr/rackhand/releases)**.  
-No Python installation or dependencies required: download `rackhand.exe` and run it.\
-All versions before v1.2 is EOF and is not recommended for use. 
-
----
-
 ### What it does
 
 * **Direct Serial & SSH**: Plugs straight into USB-to-serial console cables (with automatic COM port and baud detection) or network SSH sessions.
@@ -26,6 +18,14 @@ All versions before v1.2 is EOF and is not recommended for use.
 
 ![Rackhand](screenshot-agent.png)
 
+---
+
+### Download
+
+Grab the standalone Windows executable from **[GitHub Releases](https://github.com/theflorr/rackhand/releases)**.  
+No Python installation or dependencies required: download `rackhand.exe` and run it.\
+\
+Please take a look at the bottom section of this readme for more notes and details about download/install
 ---
 
 ### Safety & Approvals
@@ -82,8 +82,6 @@ python compile.py
 
 Example image: https://imgur.com/a/ql7n6Rh \
 Simply open the rackhand.exe properties and locate the "Remove blocking" at the very bottom and click it. \
-Due to some EDRs and file scanners, startup might be slow when installing fresh/updating to a new version on restricted work computers.
-
-### License
-
-Distributed under the [MIT License](LICENSE).
+\
+Due to some EDRs and file scanners, startup might be slow when installing fresh/updating to a new version on restricted work computers. \
+Also, some versions are missing the proper auto update handling, so its recommended you install the latest avaliable version and update whenever.
