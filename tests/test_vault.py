@@ -324,3 +324,23 @@ def test_vault_wipe_and_start_fresh(temp_vault_dir):
     assert not vault.backup_path.exists()
     assert not vault.is_unlocked()
     assert not vault.is_vault_initialized()
+
+
+@pytest.mark.asyncio
+async def test_vault_setup_checkbox_no_ellipsis():
+    from textual.app import App
+    from textual.widgets import Checkbox
+    from ui.modals.vault import VaultSetupModal
+
+    class _TestApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(VaultSetupModal())
+
+    app = _TestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        cb = app.screen.query_one("#setup-checkbox", Checkbox)
+        assert cb.render_line(0).text == "▐X▌"
+        cb.value = True
+        await pilot.pause()
+        assert cb.render_line(0).text == "▐X▌"

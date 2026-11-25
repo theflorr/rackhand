@@ -96,6 +96,7 @@ class VaultSetupModal(ModalScreen[bool]):
         margin: 0;
         border: none;
         background: transparent;
+        text-overflow: clip;
     }
     #setup-checkbox-label {
         width: 1fr;
