@@ -1007,35 +1007,47 @@ fn main() -> Result<()> {
 
     print("      ✓ Configured standalone WebView2 + ConPTY GUI host and --cli mode.")
 
-    # Patch build.rs to compile rackhand.ico resource
+    # Patch build.rs to compile rackhand.ico and Windows PE version/product metadata
     build_rs = pyapp_dir / "build.rs"
     build_content = build_rs.read_text(encoding="utf-8")
+    meta_lines = (
+        '        res.set("FileDescription", "Rackhand");\n'
+        '        res.set("ProductName", "Rackhand");\n'
+        '        res.set("InternalName", "Rackhand");\n'
+        '        res.set("OriginalFilename", "rackhand.exe");\n'
+    )
     if 'set_icon("rackhand.ico")' not in build_content:
-        icon_hook = """
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        icon_hook = f"""
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {{
         let mut res = winres::WindowsResource::new();
         res.set_icon("rackhand.ico");
-        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+{meta_lines}        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {{
             res.set_windres_path("x86_64-w64-mingw32-windres");
             res.set_ar_path("x86_64-w64-mingw32-ar");
-        }
-        if let Err(e) = res.compile() {
-            eprintln!("Failed to compile Windows resource: {:?}", e);
-        }
-        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
-            if let Ok(out_dir) = std::env::var("OUT_DIR") {
+        }}
+        if let Err(e) = res.compile() {{
+            eprintln!("Failed to compile Windows resource: {{:?}}", e);
+        }}
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {{
+            if let Ok(out_dir) = std::env::var("OUT_DIR") {{
                 let res_o = std::path::Path::new(&out_dir).join("resource.o");
-                println!("cargo:rustc-link-arg={}", res_o.display());
-            }
-        }
-    }
+                println!("cargo:rustc-link-arg={{}}", res_o.display());
+            }}
+        }}
+    }}
 """
-        # Insert before the closing brace of main()
         idx = build_content.rfind("}")
         if idx != -1:
             build_content = build_content[:idx] + icon_hook + build_content[idx:]
             build_rs.write_text(build_content, encoding="utf-8")
-            print("      ✓ Injected Windows icon embedding hook into build.rs.")
+            print("      ✓ Injected Windows icon + Rackhand metadata hook into build.rs.")
+    elif '"FileDescription"' not in build_content:
+        build_content = build_content.replace(
+            'res.set_icon("rackhand.ico");\n',
+            'res.set_icon("rackhand.ico");\n' + meta_lines,
+        )
+        build_rs.write_text(build_content, encoding="utf-8")
+        print("      ✓ Updated build.rs with Rackhand Windows PE metadata.")
 
     # Patch distribution.rs to auto-update cache and clean old version directories
     dist_rs = pyapp_dir / "src" / "distribution.rs"
