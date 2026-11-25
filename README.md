@@ -2,7 +2,7 @@
 
 **Agentic network engineering - autonomously**
 
-Rackhand connects LLM agents directly to the device, so you don't have to relay output and commands by hand. We put autonomous LLM agents directly on your serial console and SSH sessions. It can edit switch and router configs, troubleshoots VLANs and routing protocols, and plan out the exact commands with human approval before touching your hardware.
+Rackhand connects autonomous LLM agents directly to the device, either over serial or ssh, so you don't have to relay output and commands by hand. It can edit switch and router configs, troubleshoots VLANs and routing protocols, and plan out the exact commands with human approval before touching your hardware.
 
 ![Rackhand](screenshot.png)
 
