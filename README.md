@@ -81,7 +81,8 @@ python compile.py
 #### Can't run rackhand.exe due to windows smartscreen?
 
 Example image: https://imgur.com/a/ql7n6Rh \
-Simply open the rackhand.exe properties and locate the "Remove blocking" at the very bottom and click it.
+Simply open the rackhand.exe properties and locate the "Remove blocking" at the very bottom and click it. \
+Due to some EDRs and file scanners, startup might be slow when installing fresh/updating to a new version on restricted work computers.
 
 ### License
 
