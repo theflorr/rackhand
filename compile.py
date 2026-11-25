@@ -814,7 +814,7 @@ fn spawn_conpty_child(
 }
 
 fn ensure_webview2_loader() -> Result<()> {
-    let dir = crate::app::install_dir();
+    let dir = std::env::temp_dir().join("rackhand-webview2");
     std::fs::create_dir_all(&dir)?;
     let dll_path = dir.join("WebView2Loader.dll");
     if !dll_path.is_file() || std::fs::metadata(&dll_path).map(|m| m.len() as usize).unwrap_or(0) != WEBVIEW2_LOADER_DLL.len() {
@@ -917,7 +917,7 @@ pub fn run_gui_host() -> Result<()> {
         let installed = std::fs::read_to_string(&hash_file).unwrap_or_default();
         if !crate::app::install_dir().is_dir() || installed != crate::app::project_version() {
             let msg = base64::engine::general_purpose::STANDARD
-                .encode(b"\x1b[2mInitializing Rackhand environment (first run)...\r\n\x1b[0m");
+                .encode(b"\x1b[2mInitializing Rackhand...\r\n\x1b[0m");
             let _ = proxy_boot.send_event(GuiEvent::PtyOutput(msg));
         }
         if let Err(err) = crate::distribution::ensure_ready() {
